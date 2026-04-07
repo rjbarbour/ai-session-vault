@@ -1,0 +1,463 @@
+"""Export Claude Code and Codex session JSONL files to Obsidian-friendly Markdown.
+
+Each session becomes one .md file with YAML frontmatter and
+human/assistant messages as sections. Tool calls and results
+are summarised, not dumped in full.
+
+Supports two JSONL formats:
+  - Claude Code: {"type": "user"|"assistant", "message": {"content": ...}}
+  - Codex:       {"timestamp": ..., "type": "response_item"|"event_msg", "payload": {...}}
+
+Format is auto-detected from the first JSONL line.
+
+Usage:
+    python3 scripts/export_sessions_to_obsidian.py [--vault PATH]
+
+Configuration:
+    Paths are loaded from config.json (see config.example.json).
+    CLI flags override config values. Without config.json, generic defaults
+    are used (~/.claude/projects, ~/.codex/sessions).
+"""
+import argparse
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+
+GENERIC_DEFAULTS = {
+    "vault_path": str(Path.home() / "obsidian-session-vault"),
+    "claude_projects": [str(Path.home() / ".claude" / "projects")],
+    "codex_sessions": str(Path.home() / ".codex" / "sessions"),
+}
+
+
+def load_config():
+    """Load config.json if present, else return generic defaults.
+
+    Expands ~ in all path values.
+    """
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    else:
+        cfg = dict(GENERIC_DEFAULTS)
+
+    cfg["vault_path"] = str(Path(cfg["vault_path"]).expanduser())
+    cfg["claude_projects"] = [
+        str(Path(p).expanduser())
+        for p in cfg.get("claude_projects", GENERIC_DEFAULTS["claude_projects"])
+    ]
+    cfg["codex_sessions"] = str(
+        Path(cfg.get("codex_sessions", GENERIC_DEFAULTS["codex_sessions"])).expanduser()
+    )
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Format detection
+# ---------------------------------------------------------------------------
+
+def detect_format(jsonl_path):
+    """Return 'claude' or 'codex' based on the first parseable line."""
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "payload" in data and data.get("type") in (
+                "session_meta", "event_msg", "response_item", "turn_context",
+            ):
+                return "codex"
+            if data.get("type") in ("user", "assistant", "system", "human", "file-history-snapshot"):
+                return "claude"
+            return "claude"
+    return "claude"
+
+
+# ---------------------------------------------------------------------------
+# Claude Code format
+# ---------------------------------------------------------------------------
+
+def claude_extract_text(content):
+    """Pull plain text from Claude message content (string or list of blocks).
+
+    Skips tool_result and thinking blocks.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                btype = block.get("type", "")
+                if btype == "text":
+                    parts.append(block.get("text", ""))
+                elif btype == "tool_use":
+                    name = block.get("name", "unknown_tool")
+                    parts.append(f"[Tool call: {name}]")
+        return "\n".join(parts)
+    return str(content)
+
+
+def summarise_tool_use(block):
+    """Return a compact one-line summary of a tool_use block."""
+    name = block.get("name", "unknown")
+    inp = block.get("input", {})
+    if name == "Read":
+        return f"Read: {inp.get('file_path', '?')}"
+    if name == "Write":
+        return f"Write: {inp.get('file_path', '?')}"
+    if name == "Edit":
+        return f"Edit: {inp.get('file_path', '?')}"
+    if name == "Bash":
+        cmd = inp.get("command", "")
+        return f"Bash: `{cmd[:80]}{'...' if len(cmd) > 80 else ''}`"
+    if name == "Grep":
+        return f"Grep: pattern={inp.get('pattern', '?')[:40]}"
+    if name == "Glob":
+        return f"Glob: {inp.get('pattern', '?')}"
+    if name == "Agent":
+        return f"Agent: {inp.get('description', '?')[:60]}"
+    if name == "TodoWrite":
+        return "[TodoWrite update]"
+    if name == "WebSearch":
+        return f"WebSearch: {inp.get('query', '?')[:60]}"
+    if name == "WebFetch":
+        return f"WebFetch: {inp.get('url', '?')[:60]}"
+    return f"{name}: {json.dumps(inp)[:80]}"
+
+
+def claude_process_message(msg_data):
+    """Convert a Claude Code JSONL line to a (role, text) tuple or None."""
+    msg_type = msg_data.get("type", "")
+
+    if msg_type in ("user", "human"):
+        message = msg_data.get("message", {})
+        if isinstance(message, dict):
+            content = message.get("content", "")
+        elif isinstance(message, str):
+            content = message
+        else:
+            return None
+        text = claude_extract_text(content)
+        text = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.DOTALL)
+        text = text.strip()
+        if not text or len(text) < 3:
+            return None
+        return ("user", text)
+
+    if msg_type == "assistant":
+        message = msg_data.get("message", {})
+        if isinstance(message, dict):
+            content = message.get("content", "")
+        elif isinstance(message, str):
+            content = message
+        else:
+            return None
+
+        parts = []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        t = block.get("text", "").strip()
+                        if t:
+                            parts.append(t)
+                    elif block.get("type") == "tool_use":
+                        parts.append(f"- {summarise_tool_use(block)}")
+                elif isinstance(block, str):
+                    parts.append(block)
+        elif isinstance(content, str):
+            parts.append(content)
+
+        text = "\n".join(parts).strip()
+        if not text:
+            return None
+        return ("assistant", text)
+
+    return None
+
+
+def parse_claude_session(jsonl_path):
+    """Parse a Claude Code JSONL file into a list of (role, text) tuples."""
+    messages = []
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            result = claude_process_message(data)
+            if result:
+                messages.append(result)
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Codex format
+# ---------------------------------------------------------------------------
+
+def codex_summarise_function_call(payload):
+    """Return a compact one-line summary of a Codex function_call payload."""
+    name = payload.get("name", "unknown")
+    args_raw = payload.get("arguments", "{}")
+    try:
+        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+    except (json.JSONDecodeError, TypeError):
+        args = {}
+
+    if name == "exec_command":
+        cmd = args.get("cmd", "")
+        return f"exec: `{cmd[:80]}{'...' if len(cmd) > 80 else ''}`"
+    if name.startswith("_search"):
+        query = args.get("query", "")
+        return f"{name}: {query[:60]}"
+    if name.startswith("_list"):
+        return f"{name}"
+    return f"{name}: {json.dumps(args)[:80]}"
+
+
+def codex_process_line(line_data):
+    """Convert a Codex JSONL line to a (role, text) tuple or None.
+
+    Returns meaningful conversational content only. Skips:
+    - session_meta, turn_context (session plumbing)
+    - event_msg (status messages, usually empty)
+    - response_item/reasoning (internal chain-of-thought)
+    - response_item/function_call_output (tool results)
+    - response_item/web_search_call, tool_search_call, tool_search_output
+    - developer and system-like user messages (XML-wrapped instructions)
+    """
+    msg_type = line_data.get("type", "")
+    payload = line_data.get("payload", {})
+
+    if msg_type != "response_item":
+        return None
+
+    item_type = payload.get("type", "")
+    role = payload.get("role", "")
+
+    if item_type == "message":
+        content = payload.get("content", [])
+        if not isinstance(content, list) or not content:
+            return None
+
+        first_block = content[0]
+        if not isinstance(first_block, dict):
+            return None
+
+        content_type = first_block.get("type", "")
+        text = first_block.get("text", "") or ""
+
+        if role == "developer":
+            return None
+        if role == "user" and content_type == "input_text":
+            if text.startswith("<") and ">" in text[:50]:
+                return None
+            text = text.strip()
+            if not text or len(text) < 3:
+                return None
+            return ("user", text)
+        if role == "assistant" and content_type == "output_text":
+            text = text.strip()
+            if not text:
+                return None
+            return ("assistant", text)
+        return None
+
+    if item_type == "function_call":
+        summary = codex_summarise_function_call(payload)
+        return ("assistant", f"- {summary}")
+
+    return None
+
+
+def parse_codex_session(jsonl_path):
+    """Parse a Codex JSONL file into a list of (role, text) tuples."""
+    messages = []
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            result = codex_process_line(data)
+            if result:
+                messages.append(result)
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Shared export logic
+# ---------------------------------------------------------------------------
+
+# Keep old names as aliases so existing tests still import them
+extract_text = claude_extract_text
+process_message = claude_process_message
+
+
+def session_date(jsonl_path):
+    """Get the modification time of the JSONL file as a date string."""
+    mtime = jsonl_path.stat().st_mtime
+    return datetime.fromtimestamp(mtime)
+
+
+def export_session(jsonl_path, vault_dir, source_tag=None):
+    """Convert one JSONL file to an Obsidian Markdown file.
+
+    Auto-detects Claude Code vs Codex format.
+    """
+    fmt = detect_format(jsonl_path)
+    if source_tag is None:
+        source_tag = fmt
+
+    if fmt == "codex":
+        messages = parse_codex_session(jsonl_path)
+    else:
+        messages = parse_claude_session(jsonl_path)
+
+    if not messages:
+        return None
+
+    session_id = jsonl_path.stem
+    dt = session_date(jsonl_path)
+    date_str = dt.strftime("%Y-%m-%d")
+    time_str = dt.strftime("%H:%M")
+
+    user_count = sum(1 for r, _ in messages if r == "user")
+    assistant_count = sum(1 for r, _ in messages if r == "assistant")
+
+    first_user_msg = next((t for r, t in messages if r == "user"), "")
+    title_candidate = first_user_msg[:80].replace("\n", " ").strip()
+    if len(title_candidate) > 60:
+        title_candidate = title_candidate[:57] + "..."
+
+    lines = []
+    lines.append("---")
+    lines.append(f"session_id: {session_id}")
+    lines.append(f"date: {date_str}")
+    lines.append(f"time: {time_str}")
+    lines.append(f"source: {source_tag}")
+    lines.append(f"user_messages: {user_count}")
+    lines.append(f"assistant_messages: {assistant_count}")
+    lines.append(f"tags: [{source_tag}-session]")
+    lines.append("---")
+    lines.append("")
+    lines.append(f"# {title_candidate}")
+    lines.append("")
+
+    turn = 0
+    for role, text in messages:
+        turn += 1
+        if role == "user":
+            lines.append(f"## User (turn {turn})")
+            lines.append("")
+            truncated = text[:3000]
+            if len(text) > 3000:
+                truncated += f"\n\n*[Message truncated — {len(text)} chars total]*"
+            lines.append(truncated)
+            lines.append("")
+        else:
+            lines.append(f"## Assistant (turn {turn})")
+            lines.append("")
+            truncated = text[:5000]
+            if len(text) > 5000:
+                truncated += f"\n\n*[Response truncated — {len(text)} chars total]*"
+            lines.append(truncated)
+            lines.append("")
+
+    filename = f"{date_str}_{source_tag}_{session_id[:8]}.md"
+    out_path = vault_dir / filename
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def find_session_files(claude_project_dirs, codex_sessions):
+    """Find all JSONL session files from all configured sources."""
+    found = []
+    for claude_project in claude_project_dirs:
+        if not claude_project.exists():
+            continue
+        jsonl_files = sorted(claude_project.glob("*.jsonl"))
+        if jsonl_files:
+            for f in jsonl_files:
+                found.append(("claude", f))
+        else:
+            for f in sorted(claude_project.rglob("*.jsonl")):
+                found.append(("claude", f))
+    if codex_sessions.exists():
+        for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
+            found.append(("codex", f))
+    return found
+
+
+def main():
+    cfg = load_config()
+
+    parser = argparse.ArgumentParser(
+        description="Export Claude Code and Codex sessions to Obsidian"
+    )
+    parser.add_argument("--vault", type=Path, default=None)
+    parser.add_argument("--claude-project", type=Path, default=None,
+                        help="Single Claude project dir (overrides config.json)")
+    parser.add_argument("--codex-sessions", type=Path, default=None)
+    args = parser.parse_args()
+
+    vault = args.vault or Path(cfg["vault_path"])
+    codex_sessions = args.codex_sessions or Path(cfg["codex_sessions"])
+
+    if args.claude_project:
+        claude_project_dirs = [args.claude_project]
+    else:
+        claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
+
+    if not vault.exists():
+        print(f"Vault directory not found: {vault}", file=sys.stderr)
+        sys.exit(1)
+
+    session_files = find_session_files(claude_project_dirs, codex_sessions)
+    if not session_files:
+        print("No session files found.", file=sys.stderr)
+        sys.exit(1)
+
+    claude_count = sum(1 for s, _ in session_files if s == "claude")
+    codex_count = sum(1 for s, _ in session_files if s == "codex")
+    print(f"Found {len(session_files)} session files ({claude_count} Claude, {codex_count} Codex)")
+    print(f"Exporting to: {vault}")
+    print()
+
+    exported = 0
+    for source_tag, jsonl_path in session_files:
+        result = export_session(jsonl_path, vault, source_tag=source_tag)
+        if result:
+            size_kb = result.stat().st_size / 1024
+            print(f"  [{source_tag:6s}] {result.name} ({size_kb:.1f} KB)")
+            exported += 1
+        else:
+            print(f"  [{source_tag:6s}] {jsonl_path.stem[:20]}... (skipped — no messages)")
+
+    print(f"\nExported {exported}/{len(session_files)} sessions")
+
+
+if __name__ == "__main__":
+    main()

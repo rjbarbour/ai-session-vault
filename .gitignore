@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+config.json
+AGENTS.md
+cross_account_permissions.md

@@ -1,0 +1,8 @@
+{
+  "vault_path": "~/obsidian-session-vault",
+  "claude_projects": [
+    "~/.claude/projects"
+  ],
+  "codex_sessions": "~/.codex/sessions",
+  "accounts": []
+}
