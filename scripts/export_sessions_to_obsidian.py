@@ -615,9 +615,12 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
             lines.append(truncated)
             lines.append("")
 
-    # For Codex, use the session UUID (not the rollout- prefix) as the ID suffix
+    # Build a unique ID suffix for the filename
     if fmt == "codex" and codex_session_id:
         id_suffix = codex_session_id[:8]
+    elif session_id.startswith("agent-"):
+        # Subagent IDs need more chars to be unique (e.g. agent-aca1b2dc51c7ffd2d)
+        id_suffix = session_id[:16]
     else:
         id_suffix = session_id[:8]
     filename = f"{date_str}_{source_tag}_{title_slug}_{id_suffix}.md"
