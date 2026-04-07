@@ -363,13 +363,60 @@ def load_desktop_titles():
     return titles
 
 
+def load_codex_titles(codex_sessions_path=None):
+    """Load session titles from Codex session_index.jsonl.
+
+    Returns a dict mapping session UUID -> thread_name.
+    Reads from ~/.codex/session_index.jsonl by default.
+    """
+    titles = {}
+    if codex_sessions_path:
+        index_path = Path(codex_sessions_path).parent / "session_index.jsonl"
+    else:
+        index_path = Path.home() / ".codex" / "session_index.jsonl"
+    if not index_path.exists():
+        return titles
+    with open(index_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                sid = data.get("id", "")
+                name = data.get("thread_name", "")
+                if sid and name:
+                    titles[sid] = name
+            except json.JSONDecodeError:
+                continue
+    return titles
+
+
+def extract_codex_meta(jsonl_path):
+    """Extract session ID and cwd from a Codex JSONL session_meta line."""
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("type") == "session_meta":
+                payload = data.get("payload", {})
+                return payload.get("id", ""), payload.get("cwd", "")
+    return "", ""
+
+
 def session_date(jsonl_path):
     """Get the modification time of the JSONL file as a date string."""
     mtime = jsonl_path.stat().st_mtime
     return datetime.fromtimestamp(mtime)
 
 
-def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None):
+def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
+                   codex_titles=None):
     """Convert one JSONL file to an Obsidian Markdown file.
 
     Auto-detects Claude Code vs Codex format.
@@ -394,25 +441,29 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None):
     # Extract project working directory and entrypoint from JSONL metadata
     project = ""
     entrypoint = ""
-    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
-        for raw_line in f:
-            raw_line = raw_line.strip()
-            if not raw_line:
-                continue
-            try:
-                line_data = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if not project:
-                cwd = line_data.get("cwd", "")
-                if cwd:
-                    project = cwd
-            if not entrypoint:
-                ep = line_data.get("entrypoint", "")
-                if ep:
-                    entrypoint = ep
-            if project and entrypoint:
-                break
+    codex_session_id = ""
+    if fmt == "codex":
+        codex_session_id, project = extract_codex_meta(jsonl_path)
+    else:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    line_data = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not project:
+                    cwd = line_data.get("cwd", "")
+                    if cwd:
+                        project = cwd
+                if not entrypoint:
+                    ep = line_data.get("entrypoint", "")
+                    if ep:
+                        entrypoint = ep
+                if project and entrypoint:
+                    break
     if not project:
         project = jsonl_path.parent.name
 
@@ -449,12 +500,20 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None):
     if desktop_titles and session_id in desktop_titles:
         desktop_title = desktop_titles[session_id]
 
+    # Check Codex session_index for a thread_name
+    codex_title = ""
+    if codex_titles and codex_session_id and codex_session_id in codex_titles:
+        codex_title = codex_titles[codex_session_id]
+
     if custom_title:
         title_candidate = custom_title
         title_source = "custom"
     elif desktop_title:
         title_candidate = desktop_title
         title_source = "desktop"
+    elif codex_title:
+        title_candidate = codex_title
+        title_source = "codex"
     else:
         title_candidate = clean_first_msg[:80]
         if len(title_candidate) > 60:
@@ -508,7 +567,12 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None):
             lines.append(truncated)
             lines.append("")
 
-    filename = f"{date_str}_{source_tag}_{title_slug}_{session_id[:8]}.md"
+    # For Codex, use the session UUID (not the rollout- prefix) as the ID suffix
+    if fmt == "codex" and codex_session_id:
+        id_suffix = codex_session_id[:8]
+    else:
+        id_suffix = session_id[:8]
+    filename = f"{date_str}_{source_tag}_{title_slug}_{id_suffix}.md"
     out_path = vault_dir / filename
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
@@ -562,6 +626,7 @@ def main():
         sys.exit(1)
 
     desktop_titles = load_desktop_titles()
+    codex_titles = load_codex_titles(str(codex_sessions))
 
     session_files = find_session_files(claude_project_dirs, codex_sessions)
     if not session_files:
@@ -577,7 +642,8 @@ def main():
     exported = 0
     for source_tag, jsonl_path in session_files:
         result = export_session(jsonl_path, vault, source_tag=source_tag,
-                                desktop_titles=desktop_titles)
+                                desktop_titles=desktop_titles,
+                                codex_titles=codex_titles)
         if result:
             size_kb = result.stat().st_size / 1024
             print(f"  [{source_tag:6s}] {result.name} ({size_kb:.1f} KB)")
