@@ -688,7 +688,7 @@ class TestObsidianCompat:
             f.write(json.dumps({"type": "user", "message": {"content": "test message here"}}) + "\n")
             f.write(json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n")
         result = export_session(jsonl_path, vault)
-        assert "_claude_abcdef12.md" in result.name
+        assert "_claude-cli_test-message-here_abcdef12.md" in result.name
         assert result.suffix == ".md"
 
     def test_no_bare_yaml_special_chars(self, tmp_path):
