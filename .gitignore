@@ -3,5 +3,6 @@ __pycache__/
 .pytest_cache/
 config.json
 AGENTS.md
+PLAN.md
 cross_account_permissions.md
 audit_*.md
