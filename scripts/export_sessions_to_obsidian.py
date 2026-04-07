@@ -582,6 +582,21 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
 # CLI
 # ---------------------------------------------------------------------------
 
+MIN_USER_MESSAGES = 2  # Skip single-turn sessions (e.g. claude -p enrichment calls)
+
+
+def _has_enough_turns(jsonl_path):
+    """Quick check if a JSONL file has at least MIN_USER_MESSAGES user turns."""
+    count = 0
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"type": "user"' in line or '"type":"user"' in line:
+                count += 1
+                if count >= MIN_USER_MESSAGES:
+                    return True
+    return False
+
+
 def find_session_files(claude_project_dirs, codex_sessions):
     """Find all JSONL session files from all configured sources."""
     found = []
@@ -590,11 +605,19 @@ def find_session_files(claude_project_dirs, codex_sessions):
             continue
         jsonl_files = sorted(claude_project.glob("*.jsonl"))
         if jsonl_files:
+            # Direct project dir — export its top-level JSONL files
             for f in jsonl_files:
-                found.append(("claude", f))
+                if _has_enough_turns(f):
+                    found.append(("claude", f))
         else:
-            for f in sorted(claude_project.rglob("*.jsonl")):
-                found.append(("claude", f))
+            # Parent dir containing project subdirs — collect top-level
+            # JSONL from each project, skipping subagents/memory subdirs
+            for project_dir in sorted(claude_project.iterdir()):
+                if not project_dir.is_dir():
+                    continue
+                for f in sorted(project_dir.glob("*.jsonl")):
+                    if _has_enough_turns(f):
+                        found.append(("claude", f))
     if codex_sessions.exists():
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
             found.append(("codex", f))
