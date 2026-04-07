@@ -672,14 +672,27 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                 if _is_interactive_session(f):
                     found.append(("claude", f))
         else:
-            # Parent dir containing project subdirs — collect top-level
-            # JSONL from each project, skipping subagents/memory subdirs
+            # Parent dir containing project subdirs
             for project_dir in sorted(claude_project.iterdir()):
                 if not project_dir.is_dir():
                     continue
-                for f in sorted(project_dir.glob("*.jsonl")):
-                    if _is_interactive_session(f):
-                        found.append(("claude", f))
+                top_jsonl = sorted(project_dir.glob("*.jsonl"))
+                if top_jsonl:
+                    # Has top-level JSONL — export those
+                    for f in top_jsonl:
+                        if _is_interactive_session(f):
+                            found.append(("claude", f))
+                else:
+                    # No top-level JSONL — check for session subdirs with
+                    # subagent files (Desktop sessions that delegated to agents)
+                    for session_dir in sorted(project_dir.iterdir()):
+                        if not session_dir.is_dir() or session_dir.name == "memory":
+                            continue
+                        subagent_dir = session_dir / "subagents"
+                        if subagent_dir.is_dir():
+                            for f in sorted(subagent_dir.glob("*.jsonl")):
+                                if _is_interactive_session(f):
+                                    found.append(("claude", f))
     if codex_sessions.exists():
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
             found.append(("codex", f))

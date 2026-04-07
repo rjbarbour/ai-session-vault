@@ -202,13 +202,61 @@ def scan_vault(vault_path):
     return by_project, by_source, total
 
 
-def match_count(cwd_counts, project_path):
-    """Count sessions matching a project path, including subdirectory matches."""
+def build_path_aliases(home):
+    """Build a mapping of iCloud-moved paths to their TMD equivalents.
+
+    When iCloud Optimize Storage moved ~/Documents/ contents into the
+    'Documents - TMD's MacBook Pro' subfolder, session cwds still reference
+    the old paths. This builds aliases so the audit can match them.
+    """
+    docs = os.path.join(home, "Documents")
+    aliases = {}  # old_path -> tmd_path
+
+    tmd_name = None
+    if os.path.isdir(docs):
+        for item in os.listdir(docs):
+            if "TMD" in item or "MacBook" in item:
+                full = os.path.join(docs, item)
+                if os.path.isdir(full):
+                    tmd_name = item
+                    break
+
+    if not tmd_name:
+        return aliases
+
+    tmd = os.path.join(docs, tmd_name)
+    # Map ~/Documents/Projects/X -> ~/Documents/TMD/Projects/X
+    # Map ~/Documents/GitHub/X -> ~/Documents/TMD/GitHub/X
+    for subdir in ("Projects", "GitHub"):
+        old_root = os.path.join(docs, subdir)
+        new_root = os.path.join(tmd, subdir)
+        if os.path.isdir(new_root):
+            for item in os.listdir(new_root):
+                old_path = os.path.join(old_root, item)
+                new_path = os.path.join(new_root, item)
+                aliases[old_path] = new_path
+
+    return aliases
+
+
+def match_count(cwd_counts, project_path, aliases=None):
+    """Count sessions matching a project path, including subdirectory and alias matches."""
     count = cwd_counts.get(project_path, 0)
     prefix = project_path + "/"
     for cwd, n in cwd_counts.items():
         if cwd.startswith(prefix):
             count += n
+
+    # Check aliases: if a session cwd is an old path that maps to this project
+    if aliases:
+        for old_path, new_path in aliases.items():
+            if new_path == project_path or new_path.startswith(project_path + "/"):
+                count += cwd_counts.get(old_path, 0)
+                old_prefix = old_path + "/"
+                for cwd, n in cwd_counts.items():
+                    if cwd.startswith(old_prefix):
+                        count += n
+
     return count
 
 
@@ -238,6 +286,7 @@ def generate_report(home, vault_path, account):
     vault_projects, vault_sources, vault_total = scan_vault(vault_path)
 
     known_paths = [full for _, _, full in projects]
+    aliases = build_path_aliases(home)
 
     lines = []
     lines.append(f"# {account} Session Audit ({now})")
@@ -254,13 +303,13 @@ def generate_report(home, vault_path, account):
             continue
 
         has_claude = os.path.isdir(os.path.join(full, ".claude"))
-        n_cli = match_count(cli, full)
-        n_desk = match_count(desktop, full)
-        n_codex = match_count(codex, full)
-        n_cowork = match_count(cowork_cwds, full)
+        n_cli = match_count(cli, full, aliases)
+        n_desk = match_count(desktop, full, aliases)
+        n_codex = match_count(codex, full, aliases)
+        n_cowork = match_count(cowork_cwds, full, aliases)
         total = n_cli + n_desk + n_codex + n_cowork
 
-        n_vault = match_count(vault_projects, full)
+        n_vault = match_count(vault_projects, full, aliases)
 
         found = "✅" if total > 0 else "❌"
         if total == 0:
@@ -301,8 +350,8 @@ def generate_report(home, vault_path, account):
     for label, name, full in projects:
         if name in skip_names:
             continue
-        n_total = match_count(cli, full) + match_count(desktop, full) + match_count(codex, full) + match_count(cowork_cwds, full)
-        n_vault = match_count(vault_projects, full)
+        n_total = match_count(cli, full, aliases) + match_count(desktop, full, aliases) + match_count(codex, full, aliases) + match_count(cowork_cwds, full, aliases)
+        n_vault = match_count(vault_projects, full, aliases)
         if n_total > 0 and n_vault < n_total:
             missing = n_total - n_vault
             gaps.append(f"- {label}/{name}: {missing} session(s) missing from vault")
