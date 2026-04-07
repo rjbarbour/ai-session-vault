@@ -582,19 +582,30 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
 # CLI
 # ---------------------------------------------------------------------------
 
-MIN_USER_MESSAGES = 2  # Skip single-turn sessions (e.g. claude -p enrichment calls)
+MIN_USER_MESSAGES = 2
 
 
-def _has_enough_turns(jsonl_path):
-    """Quick check if a JSONL file has at least MIN_USER_MESSAGES user turns."""
-    count = 0
+def _is_interactive_session(jsonl_path):
+    """Check if a JSONL file is a real interactive session, not a claude -p call.
+
+    Filters out non-interactive sessions that match BOTH:
+    - Fewer than MIN_USER_MESSAGES user turns
+    - Contains a queue-operation/enqueue record (signature of claude -p)
+    """
+    user_count = 0
+    has_enqueue = False
     with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             if '"type": "user"' in line or '"type":"user"' in line:
-                count += 1
-                if count >= MIN_USER_MESSAGES:
+                user_count += 1
+                if user_count >= MIN_USER_MESSAGES:
                     return True
-    return False
+            if '"queue-operation"' in line and '"enqueue"' in line:
+                has_enqueue = True
+    # Only filter out if BOTH conditions are true
+    if user_count < MIN_USER_MESSAGES and has_enqueue:
+        return False
+    return True
 
 
 def find_session_files(claude_project_dirs, codex_sessions):
@@ -607,7 +618,7 @@ def find_session_files(claude_project_dirs, codex_sessions):
         if jsonl_files:
             # Direct project dir — export its top-level JSONL files
             for f in jsonl_files:
-                if _has_enough_turns(f):
+                if _is_interactive_session(f):
                     found.append(("claude", f))
         else:
             # Parent dir containing project subdirs — collect top-level
@@ -616,7 +627,7 @@ def find_session_files(claude_project_dirs, codex_sessions):
                 if not project_dir.is_dir():
                     continue
                 for f in sorted(project_dir.glob("*.jsonl")):
-                    if _has_enough_turns(f):
+                    if _is_interactive_session(f):
                         found.append(("claude", f))
     if codex_sessions.exists():
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
