@@ -78,8 +78,37 @@ The title should reflect the entire session, not just the beginning. \
 Return ONLY valid JSON, no markdown fences, no explanation."""
 
 
+MAX_ENRICHMENT_CHARS = 150000
+
+
+def truncate_for_enrichment(body):
+    """If body exceeds Haiku's context, keep first 20 + last 20 turns."""
+    lines = body.split("\n")
+    turn_indices = [i for i, l in enumerate(lines)
+                    if l.startswith("## User (turn") or l.startswith("## Assistant (turn")]
+
+    if len(turn_indices) <= 40:
+        return body
+
+    cut_start = turn_indices[20]
+    cut_end = turn_indices[-20]
+    kept = (lines[:cut_start]
+            + [f"\n*[... {len(turn_indices) - 40} turns omitted for context limits ...]*\n"]
+            + lines[cut_end:])
+    return "\n".join(kept)
+
+
 def enrich_session(md_content):
-    """Call Claude CLI with the full session markdown to generate metadata."""
+    """Call Claude CLI with session markdown to generate metadata.
+
+    Truncates oversized sessions to fit Haiku's context window.
+    """
+    if len(md_content) > MAX_ENRICHMENT_CHARS:
+        parts = md_content.split("---", 2)
+        if len(parts) >= 3:
+            body = truncate_for_enrichment(parts[2])
+            md_content = "---" + parts[1] + "---" + body
+
     prompt = "Enrich this session:\n\n" + md_content
     try:
         result = subprocess.run(
