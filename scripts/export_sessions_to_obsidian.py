@@ -312,13 +312,64 @@ extract_text = claude_extract_text
 process_message = claude_process_message
 
 
+def slugify(text, max_len=50):
+    """Convert text to a filesystem-safe slug."""
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_]+", "-", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    if len(text) > max_len:
+        text = text[:max_len].rstrip("-")
+    return text or "untitled"
+
+
+def extract_custom_title(jsonl_path):
+    """Extract a custom-title from a Claude Code JSONL file, if present."""
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("type") == "custom-title":
+                return data.get("customTitle", "")
+    return ""
+
+
+def load_desktop_titles():
+    """Load session titles from Claude Desktop metadata files.
+
+    Returns a dict mapping cliSessionId -> title.
+    """
+    titles = {}
+    desktop_dir = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    if not desktop_dir.exists():
+        return titles
+    for json_file in desktop_dir.rglob("*.json"):
+        if json_file.suffix != ".json" or ".bak" in json_file.name:
+            continue
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+            cli_id = data.get("cliSessionId", "")
+            title = data.get("title", "")
+            if cli_id and title:
+                titles[cli_id] = title
+        except (json.JSONDecodeError, OSError):
+            continue
+    return titles
+
+
 def session_date(jsonl_path):
     """Get the modification time of the JSONL file as a date string."""
     mtime = jsonl_path.stat().st_mtime
     return datetime.fromtimestamp(mtime)
 
 
-def export_session(jsonl_path, vault_dir, source_tag=None):
+def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None):
     """Convert one JSONL file to an Obsidian Markdown file.
 
     Auto-detects Claude Code vs Codex format.
@@ -340,13 +391,81 @@ def export_session(jsonl_path, vault_dir, source_tag=None):
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H:%M")
 
+    # Extract project working directory and entrypoint from JSONL metadata
+    project = ""
+    entrypoint = ""
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for raw_line in f:
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                line_data = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if not project:
+                cwd = line_data.get("cwd", "")
+                if cwd:
+                    project = cwd
+            if not entrypoint:
+                ep = line_data.get("entrypoint", "")
+                if ep:
+                    entrypoint = ep
+            if project and entrypoint:
+                break
+    if not project:
+        project = jsonl_path.parent.name
+
+    # Extract account from project path (e.g. /Users/rob_dev/... -> rob_dev)
+    account = ""
+    if project.startswith("/Users/"):
+        parts = project.split("/")
+        if len(parts) >= 3:
+            account = parts[2]
+
+    # Refine source tag based on entrypoint and Desktop metadata
+    if fmt == "claude" and source_tag == "claude":
+        is_desktop = desktop_titles and session_id in (desktop_titles or {})
+        if entrypoint == "claude-desktop" or is_desktop:
+            source_tag = "claude-desktop"
+        else:
+            source_tag = "claude-cli"
+
     user_count = sum(1 for r, _ in messages if r == "user")
     assistant_count = sum(1 for r, _ in messages if r == "assistant")
 
+    # Title: prefer custom-title from JSONL, then Desktop title, then first message
+    custom_title = ""
+    if fmt == "claude":
+        custom_title = extract_custom_title(jsonl_path)
+
     first_user_msg = next((t for r, t in messages if r == "user"), "")
-    title_candidate = first_user_msg[:80].replace("\n", " ").strip()
-    if len(title_candidate) > 60:
-        title_candidate = title_candidate[:57] + "..."
+    # Strip XML tags and command wrappers for cleaner fallback titles
+    clean_first_msg = re.sub(r"<[^>]+>", "", first_user_msg).strip()
+    clean_first_msg = re.sub(r"\s+", " ", clean_first_msg)
+
+    # Check Desktop metadata for a title (by cliSessionId)
+    desktop_title = ""
+    if desktop_titles and session_id in desktop_titles:
+        desktop_title = desktop_titles[session_id]
+
+    if custom_title:
+        title_candidate = custom_title
+        title_source = "custom"
+    elif desktop_title:
+        title_candidate = desktop_title
+        title_source = "desktop"
+    else:
+        title_candidate = clean_first_msg[:80]
+        if len(title_candidate) > 60:
+            title_candidate = title_candidate[:57] + "..."
+        title_source = "first_message"
+
+    # Build filename slug from title
+    title_slug = slugify(title_candidate)
+
+    # Preserve first message snippet for searchability
+    first_msg_snippet = clean_first_msg[:120].replace("\n", " ") if clean_first_msg else ""
 
     lines = []
     lines.append("---")
@@ -354,6 +473,12 @@ def export_session(jsonl_path, vault_dir, source_tag=None):
     lines.append(f"date: {date_str}")
     lines.append(f"time: {time_str}")
     lines.append(f"source: {source_tag}")
+    lines.append(f"account: {account}")
+    lines.append(f"project: {project}")
+    lines.append(f"title: \"{title_candidate}\"")
+    lines.append(f"title_source: {title_source}")
+    if first_msg_snippet:
+        lines.append(f"first_message: \"{first_msg_snippet}\"")
     lines.append(f"user_messages: {user_count}")
     lines.append(f"assistant_messages: {assistant_count}")
     lines.append(f"tags: [{source_tag}-session]")
@@ -382,7 +507,7 @@ def export_session(jsonl_path, vault_dir, source_tag=None):
             lines.append(truncated)
             lines.append("")
 
-    filename = f"{date_str}_{source_tag}_{session_id[:8]}.md"
+    filename = f"{date_str}_{source_tag}_{title_slug}_{session_id[:8]}.md"
     out_path = vault_dir / filename
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
@@ -435,6 +560,8 @@ def main():
         print(f"Vault directory not found: {vault}", file=sys.stderr)
         sys.exit(1)
 
+    desktop_titles = load_desktop_titles()
+
     session_files = find_session_files(claude_project_dirs, codex_sessions)
     if not session_files:
         print("No session files found.", file=sys.stderr)
@@ -448,7 +575,8 @@ def main():
 
     exported = 0
     for source_tag, jsonl_path in session_files:
-        result = export_session(jsonl_path, vault, source_tag=source_tag)
+        result = export_session(jsonl_path, vault, source_tag=source_tag,
+                                desktop_titles=desktop_titles)
         if result:
             size_kb = result.stat().st_size / 1024
             print(f"  [{source_tag:6s}] {result.name} ({size_kb:.1f} KB)")
