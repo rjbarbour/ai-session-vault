@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -64,62 +65,23 @@ def extract_turns(body):
     return turns
 
 
-# Titles that are generic auto-generated patterns — Haiku will likely do better
-GENERIC_TITLE_PATTERNS = [
-    r"^init",
-    r"^initialize",
-    r"^clone .+ repository$",
-    r"^run .+ check",
-    r"^check .+ status",
-    r"^create .+ file$",
-    r"^update .+ config",
-    r"^warmup$",
-]
-
-
-def should_replace_title(original_title, title_source, haiku_title):
-    """Decide whether to use the Haiku title over the original.
-
-    Keep the original when it's a deliberate human-set title.
-    Replace when it's auto-generated, generic, or a first-message fallback.
-    """
-    # First-message fallbacks are always replaced
-    if title_source == "first_message":
-        return True
-
-    # Already enriched — skip title change
-    if title_source == "generated":
-        return False
-
-    # Custom titles from /rename are intentional — keep them
-    if title_source == "custom":
-        return False
-
-    # Desktop auto-generated titles: check if they match generic patterns
-    if title_source == "desktop":
-        lower = original_title.lower().strip()
-        for pattern in GENERIC_TITLE_PATTERNS:
-            if re.match(pattern, lower):
-                return True
-        # Desktop titles are usually decent — keep unless generic
-        return False
-
-    # Default: replace
-    return True
-
-
 ENRICHMENT_SYSTEM_PROMPT = """\
 You enrich AI coding session exports with metadata. Given the full markdown \
 of a session conversation, return a JSON object with exactly these keys:
 
-- "title": 3-7 word descriptive title capturing the main activity of the whole session
+- "title": 3-7 word descriptive title capturing the main activity of the whole session. \
+The title should reflect the entire session, not just the beginning.
+- "replace_title": true or false — whether your generated title is better than the \
+original. The original title and its source are in the YAML frontmatter. Consider: \
+a human-set custom title is usually intentional and should be kept unless it's clearly \
+wrong or misleading. An auto-generated or first-message-derived title is often generic \
+and should usually be replaced. Use your judgment.
 - "summary_short": 2-5 sentence summary covering what was done and the key outcomes
 - "summary_long": 10-15 sentence structured summary with markdown bullet points \
 organized into logical sections (e.g. context, what was done, outcomes, open items). \
 Use "\\n" for newlines and "\\n- " for bullets within the JSON string.
 - "keywords": comma-separated list of 5-10 relevant keywords for search
 
-The title should reflect the entire session, not just the beginning. \
 Return ONLY valid JSON, no markdown fences, no explanation."""
 
 
@@ -191,7 +153,7 @@ def update_file(md_path, enrichment, dry_run=False):
 
     old_title = fm.get("title", "")
     title_source = fm.get("title_source", "")
-    replace = should_replace_title(old_title, title_source, haiku_title)
+    replace = bool(enrichment.get("replace_title", True))
     new_title = haiku_title if replace else old_title
 
     # Escape for YAML
@@ -204,12 +166,12 @@ def update_file(md_path, enrichment, dry_run=False):
 
     if dry_run:
         action = "REPLACE" if replace else "KEEP"
-        print(f"  {md_path.name}")
-        print(f"    original: {old_title}")
-        print(f"    haiku:    {haiku_title}")
-        print(f"    decision: {action}")
-        print(f"    summary:  {summary_short[:100]}...")
-        print(f"    keywords: {keywords}")
+        print(f"  {md_path.name}", flush=True)
+        print(f"    original: {old_title}", flush=True)
+        print(f"    haiku:    {haiku_title}", flush=True)
+        print(f"    decision: {action}", flush=True)
+        print(f"    summary:  {summary_short[:100]}...", flush=True)
+        print(f"    keywords: {keywords}", flush=True)
         return
 
     # Build updated frontmatter lines
@@ -255,10 +217,10 @@ def update_file(md_path, enrichment, dry_run=False):
         md_path.rename(new_path)
 
     action = "REPLACED" if replace else "KEPT"
-    print(f"  {action}: {new_name}")
-    print(f"    title: {new_title}")
-    print(f"    summary: {summary_short[:120]}...")
-    print(f"    keywords: {keywords}")
+    print(f"  {action}: {new_name}", flush=True)
+    print(f"    title: {new_title}", flush=True)
+    print(f"    summary: {summary_short[:120]}...", flush=True)
+    print(f"    keywords: {keywords}", flush=True)
 
 
 def main():
@@ -292,8 +254,12 @@ def main():
         print("No sessions found to enrich.")
         return
 
-    print(f"Found {len(candidates)} session(s) to enrich (workers={args.workers}):")
-    print()
+    total = len(candidates)
+    print(f"Found {total} session(s) to enrich (workers={args.workers}):")
+    print(flush=True)
+
+    counter_lock = threading.Lock()
+    completed_count = [0]
 
     def process_one(md_file):
         """Process a single file: enrich and return result for printing."""
@@ -316,14 +282,20 @@ def main():
         for future in as_completed(futures):
             md_file, result, turn_count = future.result()
 
+            with counter_lock:
+                completed_count[0] += 1
+                n = completed_count[0]
+
+            progress = f"[{n}/{total}]"
+
             if result == "skip_no_turns":
-                print(f"  SKIP (no turns): {md_file.name}")
+                print(f"  {progress} SKIP (no turns): {md_file.name}", flush=True)
             elif result == "skip_failed":
-                print(f"  SKIP (enrichment failed): {md_file.name} ({turn_count} turns)")
+                print(f"  {progress} SKIP (failed): {md_file.name} ({turn_count} turns)", flush=True)
             else:
-                print(f"  Processing: {md_file.name} ({turn_count} turns)")
                 update_file(md_file, result, dry_run=args.dry_run)
-            print()
+                # Print progress after update_file's own output
+            print(flush=True)
 
 
 if __name__ == "__main__":
