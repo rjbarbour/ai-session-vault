@@ -366,6 +366,47 @@ def load_desktop_titles(desktop_dir=None):
     return titles
 
 
+def load_cowork_sessions(cowork_dir=None):
+    """Find Co-work session JSONL files and their titles.
+
+    Returns (titles_dict, jsonl_paths_list) where:
+    - titles_dict maps cliSessionId -> title (same format as desktop_titles)
+    - jsonl_paths_list is a list of Path objects to session JSONL files
+    """
+    titles = {}
+    jsonl_files = []
+    if cowork_dir is None:  # pragma: no cover — called from main()
+        cowork_dir = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+    else:
+        cowork_dir = Path(cowork_dir)
+    if not cowork_dir.exists():
+        return titles, jsonl_files
+
+    for json_file in cowork_dir.rglob("local_*.json"):
+        if ".bak" in json_file.name or not json_file.is_file():
+            continue
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+            cli_id = data.get("cliSessionId", "")
+            title = data.get("title", "")
+            if cli_id and title:
+                titles[cli_id] = title
+
+            # Find the paired JSONL
+            paired_dir = json_file.parent / json_file.stem
+            if paired_dir.is_dir():
+                for jf in paired_dir.rglob("*.jsonl"):
+                    if jf.name == "audit.jsonl":
+                        continue
+                    if _is_interactive_session(jf):
+                        jsonl_files.append(jf)
+        except (json.JSONDecodeError, OSError):  # pragma: no cover — defensive guard
+            continue
+
+    return titles, jsonl_files
+
+
 def load_codex_titles(codex_sessions_path=None):
     """Load session titles from Codex session_index.jsonl.
 
@@ -419,7 +460,7 @@ def session_date(jsonl_path):
 
 
 def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
-                   codex_titles=None):
+                   codex_titles=None, cowork_titles=None):
     """Convert one JSONL file to an Obsidian Markdown file.
 
     Auto-detects Claude Code vs Codex format.
@@ -477,8 +518,10 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         if len(parts) >= 3:
             account = parts[2]
 
-    # Refine source tag based on entrypoint and Desktop metadata
-    if fmt == "claude" and source_tag == "claude":
+    # Refine source tag based on entrypoint, Desktop/Co-work metadata
+    if source_tag == "cowork":
+        source_tag = "claude-cowork"
+    elif fmt == "claude" and source_tag == "claude":
         is_desktop = desktop_titles and session_id in (desktop_titles or {})
         if entrypoint == "claude-desktop" or is_desktop:
             source_tag = "claude-desktop"
@@ -498,10 +541,12 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     clean_first_msg = re.sub(r"<[^>]+>", "", first_user_msg).strip()
     clean_first_msg = re.sub(r"\s+", " ", clean_first_msg)
 
-    # Check Desktop metadata for a title (by cliSessionId)
+    # Check Desktop/Co-work metadata for a title (by cliSessionId)
     desktop_title = ""
     if desktop_titles and session_id in desktop_titles:
         desktop_title = desktop_titles[session_id]
+    if not desktop_title and cowork_titles and session_id in cowork_titles:
+        desktop_title = cowork_titles[session_id]
 
     # Check Codex session_index for a thread_name
     codex_title = ""
@@ -611,7 +656,7 @@ def _is_interactive_session(jsonl_path):
     return True
 
 
-def find_session_files(claude_project_dirs, codex_sessions):
+def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=None):
     """Find all JSONL session files from all configured sources."""
     found = []
     for claude_project in claude_project_dirs:
@@ -635,6 +680,8 @@ def find_session_files(claude_project_dirs, codex_sessions):
     if codex_sessions.exists():
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
             found.append(("codex", f))
+    for f in sorted(cowork_jsonl_files or []):
+        found.append(("cowork", f))
     return found
 
 
@@ -663,16 +710,19 @@ def main():  # pragma: no cover
         sys.exit(1)
 
     desktop_titles = load_desktop_titles()
+    cowork_titles, cowork_jsonl = load_cowork_sessions()
     codex_titles = load_codex_titles(str(codex_sessions))
 
-    session_files = find_session_files(claude_project_dirs, codex_sessions)
+    session_files = find_session_files(claude_project_dirs, codex_sessions,
+                                       cowork_jsonl_files=cowork_jsonl)
     if not session_files:
         print("No session files found.", file=sys.stderr)
         sys.exit(1)
 
     claude_count = sum(1 for s, _ in session_files if s == "claude")
     codex_count = sum(1 for s, _ in session_files if s == "codex")
-    print(f"Found {len(session_files)} session files ({claude_count} Claude, {codex_count} Codex)")
+    cowork_count = sum(1 for s, _ in session_files if s == "cowork")
+    print(f"Found {len(session_files)} session files ({claude_count} Claude, {codex_count} Codex, {cowork_count} Co-work)")
     print(f"Exporting to: {vault}")
     print()
 
@@ -680,7 +730,8 @@ def main():  # pragma: no cover
     for source_tag, jsonl_path in session_files:
         result = export_session(jsonl_path, vault, source_tag=source_tag,
                                 desktop_titles=desktop_titles,
-                                codex_titles=codex_titles)
+                                codex_titles=codex_titles,
+                                cowork_titles=cowork_titles)
         if result:
             size_kb = result.stat().st_size / 1024
             print(f"  [{source_tag:6s}] {result.name} ({size_kb:.1f} KB)")

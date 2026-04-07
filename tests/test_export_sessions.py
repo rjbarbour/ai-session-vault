@@ -23,6 +23,7 @@ from export_sessions_to_obsidian import (
     load_codex_titles,
     extract_codex_meta,
     load_desktop_titles,
+    load_cowork_sessions,
     _is_interactive_session,
     find_session_files,
 )
@@ -1412,6 +1413,102 @@ class TestMalformedJsonl:
 # ---------------------------------------------------------------------------
 # find_session_files: non-dir child in parent
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Co-work session loading
+# ---------------------------------------------------------------------------
+
+class TestLoadCoworkSessions:
+    def test_loads_titles_and_finds_jsonl(self, tmp_path):
+        cowork = tmp_path / "cowork"
+        cowork.mkdir()
+        # Create metadata JSON
+        (cowork / "local_abc123.json").write_text(json.dumps({
+            "sessionId": "local_abc123",
+            "cliSessionId": "cli-cowork-1",
+            "title": "Review thesis draft",
+            "cwd": "/sessions/awesome-fervent-hypatia",
+            "model": "claude-opus-4-6",
+        }))
+        # Create paired directory with JSONL
+        paired = cowork / "local_abc123" / ".claude" / "projects" / "-sessions-awesome-fervent-hypatia"
+        paired.mkdir(parents=True)
+        jsonl = paired / "cli-cowork-1.jsonl"
+        jsonl.write_text(
+            json.dumps({"type": "user", "message": {"content": "review this thesis"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reviewing..."}}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "what do you think?"}}) + "\n"
+        )
+        # Create audit.jsonl (should be skipped)
+        (cowork / "local_abc123" / "audit.jsonl").write_text('{"type": "audit"}\n')
+
+        titles, jsonl_files = load_cowork_sessions(str(cowork))
+        assert titles["cli-cowork-1"] == "Review thesis draft"
+        assert len(jsonl_files) == 1
+        assert jsonl_files[0].name == "cli-cowork-1.jsonl"
+
+    def test_missing_dir(self, tmp_path):
+        titles, files = load_cowork_sessions(str(tmp_path / "nonexistent"))
+        assert titles == {}
+        assert files == []
+
+    def test_skips_bak_files(self, tmp_path):
+        cowork = tmp_path / "cowork"
+        cowork.mkdir()
+        (cowork / "local_abc.json.bak.json").write_text(json.dumps({
+            "cliSessionId": "bak-id", "title": "Backup",
+        }))
+        titles, files = load_cowork_sessions(str(cowork))
+        assert "bak-id" not in titles
+
+
+class TestCoworkExport:
+    def test_cowork_session_exported_with_correct_source(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "review my thesis draft"},
+             "cwd": "/sessions/awesome-fervent-hypatia"},
+            {"type": "assistant", "message": {"content": "I'll review it now"}},
+        ])
+        cowork_titles = {"test-session": "Review Thesis Draft"}
+        result = export_session(f, vault, source_tag="cowork",
+                                cowork_titles=cowork_titles)
+        text = result.read_text()
+        assert "source: claude-cowork" in text
+        assert "claude-cowork" in result.name
+
+    def test_cowork_title_used_from_metadata(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "do something"},
+             "cwd": "/sessions/test-session"},
+            {"type": "assistant", "message": {"content": "done"}},
+        ], name="cli-id-123.jsonl")
+        cowork_titles = {"cli-id-123": "My Cowork Session Title"}
+        result = export_session(f, vault, source_tag="cowork",
+                                cowork_titles=cowork_titles)
+        text = result.read_text()
+        assert "My Cowork Session Title" in text
+        assert "title_source: desktop" in text  # reuses desktop title path
+
+
+class TestFindSessionFilesWithCowork:
+    def test_includes_cowork_files(self, tmp_path):
+        proj = tmp_path / "claude"
+        proj.mkdir()
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        cowork_file = tmp_path / "cowork-session.jsonl"
+        cowork_file.write_text(
+            json.dumps({"type": "user", "message": {"content": "first"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+        )
+        found = find_session_files([proj], codex, cowork_jsonl_files=[cowork_file])
+        cowork_found = [f for tag, f in found if tag == "cowork"]
+        assert len(cowork_found) == 1
+
 
 class TestFindSessionFilesEdgeCases:
     def test_non_dir_child_in_parent_skipped(self, tmp_path):
