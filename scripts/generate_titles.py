@@ -1,12 +1,12 @@
 """Enrich exported sessions with AI-generated titles, summaries, and keywords.
 
-Reads exported Markdown files from the vault, finds sessions with
-title_source: first_message (or all sessions with --all), samples
-turns from across the whole conversation, and asks Claude (via CLI)
-for a title, short summary, long summary, and keywords.
+Reads exported Markdown files from the vault, sends the full session
+to Claude Haiku for enrichment. Always generates summaries and keywords.
+Uses judgment to decide whether to keep the original title or substitute
+the Haiku-generated one.
 
 Usage:
-    python3 scripts/generate_titles.py [--vault PATH] [--dry-run] [--all]
+    python3 scripts/generate_titles.py [--vault PATH] [--dry-run]
 
 Requires the `claude` CLI to be installed and authenticated.
 """
@@ -61,6 +61,50 @@ def extract_turns(body):
             turns.append((current_role, text))
 
     return turns
+
+
+# Titles that are generic auto-generated patterns — Haiku will likely do better
+GENERIC_TITLE_PATTERNS = [
+    r"^init",
+    r"^initialize",
+    r"^clone .+ repository$",
+    r"^run .+ check",
+    r"^check .+ status",
+    r"^create .+ file$",
+    r"^update .+ config",
+    r"^warmup$",
+]
+
+
+def should_replace_title(original_title, title_source, haiku_title):
+    """Decide whether to use the Haiku title over the original.
+
+    Keep the original when it's a deliberate human-set title.
+    Replace when it's auto-generated, generic, or a first-message fallback.
+    """
+    # First-message fallbacks are always replaced
+    if title_source == "first_message":
+        return True
+
+    # Already enriched — skip title change
+    if title_source == "generated":
+        return False
+
+    # Custom titles from /rename are intentional — keep them
+    if title_source == "custom":
+        return False
+
+    # Desktop auto-generated titles: check if they match generic patterns
+    if title_source == "desktop":
+        lower = original_title.lower().strip()
+        for pattern in GENERIC_TITLE_PATTERNS:
+            if re.match(pattern, lower):
+                return True
+        # Desktop titles are usually decent — keep unless generic
+        return False
+
+    # Default: replace
+    return True
 
 
 ENRICHMENT_SYSTEM_PROMPT = """\
@@ -131,67 +175,88 @@ def enrich_session(md_content):
 
 
 def update_file(md_path, enrichment, dry_run=False):
-    """Update the session file with enrichment data and rename if needed."""
+    """Update the session file with enrichment data.
+
+    Always adds summaries and keywords. Keeps original title in frontmatter.
+    Uses judgment to decide whether to replace the display title.
+    """
     text = md_path.read_text(encoding="utf-8")
     fm, body = parse_frontmatter(text)
 
-    new_title = enrichment["title"].strip('"\'').rstrip(".")
+    haiku_title = enrichment["title"].strip('"\'').rstrip(".")
     summary_short = enrichment.get("summary_short", "")
     summary_long = enrichment.get("summary_long", "")
     keywords = enrichment.get("keywords", "")
 
     old_title = fm.get("title", "")
-    old_slug = slugify(old_title)
-    new_slug = slugify(new_title)
+    title_source = fm.get("title_source", "")
+    replace = should_replace_title(old_title, title_source, haiku_title)
+    new_title = haiku_title if replace else old_title
+
+    # Escape for YAML
+    new_title_yaml = new_title.replace('"', "'")
+    haiku_title_yaml = haiku_title.replace('"', "'")
+    old_title_yaml = old_title.replace('"', "'")
+    summary_short_escaped = summary_short.replace("\n", "\\n").replace('"', "'")
+    summary_long_escaped = summary_long.replace("\n", "\\n").replace('"', "'")
+    keywords_escaped = keywords.replace('"', "'")
 
     if dry_run:
-        print(f"  Would update: {md_path.name}")
-        print(f"    title: {old_title} -> {new_title}")
-        print(f"    summary: {summary_short}")
+        action = "REPLACE" if replace else "KEEP"
+        print(f"  {md_path.name}")
+        print(f"    original: {old_title}")
+        print(f"    haiku:    {haiku_title}")
+        print(f"    decision: {action}")
+        print(f"    summary:  {summary_short[:100]}...")
         print(f"    keywords: {keywords}")
         return
 
-    # Update frontmatter fields
-    text = text.replace(f'title: "{old_title}"', f'title: "{new_title}"')
-    text = text.replace("title_source: first_message", "title_source: generated")
-
-    # Escape summaries for YAML: replace real newlines with literal \n
-    summary_short_escaped = summary_short.replace("\n", "\\n")
-    summary_long_escaped = summary_long.replace("\n", "\\n")
-
-    # Insert/update summary and keywords after the tags line in frontmatter
-    tags_line = next(l for l in text.split("\n") if l.startswith("tags:"))
-
-    # Remove old summary/keywords lines if re-enriching
+    # Build updated frontmatter lines
     lines = text.split("\n")
-    lines = [l for l in lines if not l.startswith(("summary_short:", "summary_long:", "keywords:"))]
+
+    # Remove old enrichment fields if re-enriching
+    lines = [l for l in lines if not l.startswith((
+        "summary_short:", "summary_long:", "keywords:",
+        "original_title:", "haiku_title:",
+    ))]
     text = "\n".join(lines)
 
-    # Re-find tags line after cleanup
+    # Update title and title_source
+    text = text.replace(f'title: "{old_title}"', f'title: "{new_title_yaml}"')
+    if replace and title_source != "generated":
+        text = text.replace(f"title_source: {title_source}", "title_source: generated")
+
+    # Insert enrichment fields after tags line
     tags_line = next(l for l in text.split("\n") if l.startswith("tags:"))
     insertion = ""
+    insertion += f"\noriginal_title: \"{old_title_yaml}\""
+    insertion += f"\nhaiku_title: \"{haiku_title_yaml}\""
     if summary_short:
         insertion += f"\nsummary_short: \"{summary_short_escaped}\""
     if summary_long:
         insertion += f"\nsummary_long: \"{summary_long_escaped}\""
     if keywords:
-        insertion += f"\nkeywords: \"{keywords}\""
+        insertion += f"\nkeywords: \"{keywords_escaped}\""
     text = text.replace(tags_line, tags_line + insertion, 1)
 
-    # Update the markdown heading
-    text = text.replace(f"# {old_title}", f"# {new_title}", 1)
+    # Update the markdown heading if title changed
+    if replace:
+        old_slug = slugify(old_title)
+        new_slug = slugify(new_title)
+        text = text.replace(f"# {old_title}", f"# {new_title}", 1)
+        new_name = md_path.name.replace(old_slug, new_slug)
+    else:
+        new_name = md_path.name
 
-    # Compute new filename
-    new_name = md_path.name.replace(old_slug, new_slug)
     new_path = md_path.parent / new_name
-
     md_path.write_text(text, encoding="utf-8")
     if new_name != md_path.name:
         md_path.rename(new_path)
 
-    print(f"  Updated: {new_name}")
+    action = "REPLACED" if replace else "KEPT"
+    print(f"  {action}: {new_name}")
     print(f"    title: {new_title}")
-    print(f"    summary: {summary_short}")
+    print(f"    summary: {summary_short[:120]}...")
     print(f"    keywords: {keywords}")
 
 
@@ -204,8 +269,8 @@ def main():
     parser.add_argument("--vault", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would change without modifying files")
-    parser.add_argument("--all", action="store_true",
-                        help="Enrich all sessions, not just those with first_message titles")
+    parser.add_argument("--skip-enriched", action="store_true",
+                        help="Skip sessions that already have summaries")
     args = parser.parse_args()
 
     vault = args.vault or Path(cfg["vault_path"])
@@ -214,12 +279,11 @@ def main():
     for md_file in sorted(vault.glob("*.md")):
         text = md_file.read_text(encoding="utf-8")
         fm, _ = parse_frontmatter(text)
-        if args.all:
-            if fm.get("title_source") and fm.get("source"):
-                candidates.append(md_file)
-        else:
-            if fm.get("title_source") == "first_message":
-                candidates.append(md_file)
+        if not fm.get("source"):
+            continue  # not an exported session
+        if args.skip_enriched and fm.get("summary_short"):
+            continue
+        candidates.append(md_file)
 
     if not candidates:
         print("No sessions found to enrich.")
@@ -238,7 +302,6 @@ def main():
             continue
 
         print(f"  Processing: {md_file.name} ({len(turns)} turns)")
-        print(f"    Current title: {fm.get('title', '?')}")
 
         enrichment = enrich_session(text)
         if enrichment:
