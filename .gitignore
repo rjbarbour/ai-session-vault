@@ -4,3 +4,4 @@ __pycache__/
 config.json
 AGENTS.md
 cross_account_permissions.md
+audit_*.md
