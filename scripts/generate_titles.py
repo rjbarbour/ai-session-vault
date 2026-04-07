@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
@@ -271,6 +272,8 @@ def main():
                         help="Show what would change without modifying files")
     parser.add_argument("--skip-enriched", action="store_true",
                         help="Skip sessions that already have summaries")
+    parser.add_argument("--workers", type=int, default=10,
+                        help="Number of parallel workers (default: 10)")
     args = parser.parse_args()
 
     vault = args.vault or Path(cfg["vault_path"])
@@ -289,26 +292,38 @@ def main():
         print("No sessions found to enrich.")
         return
 
-    print(f"Found {len(candidates)} session(s) to enrich:")
+    print(f"Found {len(candidates)} session(s) to enrich (workers={args.workers}):")
     print()
 
-    for md_file in candidates:
+    def process_one(md_file):
+        """Process a single file: enrich and return result for printing."""
         text = md_file.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(text)
         turns = extract_turns(body)
 
         if not turns:
-            print(f"  SKIP (no turns): {md_file.name}")
-            continue
-
-        print(f"  Processing: {md_file.name} ({len(turns)} turns)")
+            return md_file, "skip_no_turns", None
 
         enrichment = enrich_session(text)
-        if enrichment:
-            update_file(md_file, enrichment, dry_run=args.dry_run)
-        else:
-            print(f"    SKIP (enrichment failed)")
-        print()
+        if not enrichment:
+            return md_file, "skip_failed", len(turns)
+
+        return md_file, enrichment, len(turns)
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(process_one, f): f for f in candidates}
+
+        for future in as_completed(futures):
+            md_file, result, turn_count = future.result()
+
+            if result == "skip_no_turns":
+                print(f"  SKIP (no turns): {md_file.name}")
+            elif result == "skip_failed":
+                print(f"  SKIP (enrichment failed): {md_file.name} ({turn_count} turns)")
+            else:
+                print(f"  Processing: {md_file.name} ({turn_count} turns)")
+                update_file(md_file, result, dry_run=args.dry_run)
+            print()
 
 
 if __name__ == "__main__":
