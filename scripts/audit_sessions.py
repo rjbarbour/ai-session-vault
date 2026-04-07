@@ -86,13 +86,16 @@ def scan_cli_sessions(home):
 
 
 def scan_desktop_sessions(home):
-    """Count Desktop sessions by cwd."""
+    """Count Desktop sessions by cwd. Also track sessions with missing parent JSONL."""
     desktop_dir = os.path.join(
         home, "Library", "Application Support", "Claude", "claude-code-sessions"
     )
     cwd_counts = defaultdict(int)
+    missing_parent = []  # (title, cwd, cliSessionId) for sessions with no parent JSONL
     if not os.path.isdir(desktop_dir):
-        return cwd_counts
+        return cwd_counts, missing_parent
+
+    projects_root = os.path.join(home, ".claude", "projects")
 
     for root, dirs, files in os.walk(desktop_dir):
         for f in files:
@@ -102,11 +105,23 @@ def scan_desktop_sessions(home):
                 with open(os.path.join(root, f)) as fh:
                     data = json.load(fh)
                 cwd = data.get("cwd", "")
+                cli_id = data.get("cliSessionId", "")
+                title = data.get("title", "")
                 if cwd:
                     cwd_counts[cwd] += 1
+                # Check if parent JSONL exists
+                if cli_id and os.path.isdir(projects_root):
+                    has_jsonl = False
+                    for proj in os.listdir(projects_root):
+                        proj_path = os.path.join(projects_root, proj)
+                        if os.path.isfile(os.path.join(proj_path, cli_id + ".jsonl")):
+                            has_jsonl = True
+                            break
+                    if not has_jsonl:
+                        missing_parent.append((title, cwd, cli_id))
             except (json.JSONDecodeError, OSError):
                 pass
-    return cwd_counts
+    return cwd_counts, missing_parent
 
 
 def scan_codex_sessions(home):
@@ -280,7 +295,7 @@ def generate_report(home, vault_path, account):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     projects = scan_project_roots(home)
     cli = scan_cli_sessions(home)
-    desktop = scan_desktop_sessions(home)
+    desktop, desktop_missing_parent = scan_desktop_sessions(home)
     codex = scan_codex_sessions(home)
     cowork_cwds, cowork_jsonl_total = scan_cowork_sessions(home)
     vault_projects, vault_sources, vault_total = scan_vault(vault_path)
@@ -311,9 +326,25 @@ def generate_report(home, vault_path, account):
 
         n_vault = match_count(vault_projects, full, aliases)
 
+        # Check if any Desktop sessions for this project have missing parent JSONL
+        has_lost_parent = False
+        for title, cwd, cli_id in desktop_missing_parent:
+            if cwd == full or cwd.startswith(full + "/"):
+                has_lost_parent = True
+                break
+            # Check aliases
+            if aliases:
+                for old_path, new_path in aliases.items():
+                    if (new_path == full or new_path.startswith(full + "/")) and \
+                       (cwd == old_path or cwd.startswith(old_path + "/")):
+                        has_lost_parent = True
+                        break
+
         found = "✅" if total > 0 else "❌"
         if total == 0:
             all_in = "➖"
+        elif has_lost_parent:
+            all_in = "⚠️"
         elif n_vault >= total:
             all_in = "✅"
         else:
@@ -364,6 +395,21 @@ def generate_report(home, vault_path, account):
             lines.append(g)
     else:
         lines.append("No gaps — all found sessions are in the vault.")
+
+    # Data losses — Desktop sessions with no parent JSONL
+    if desktop_missing_parent:
+        lines.append("")
+        lines.append("## Data Losses (Desktop sessions with no parent JSONL)")
+        lines.append("")
+        lines.append("These sessions were visible in Claude Desktop but the parent conversation")
+        lines.append("was never written to disk as JSONL. Only subagent work products may survive.")
+        lines.append("Known bug: anthropics/claude-code#29373")
+        lines.append("")
+        lines.append("| Title | Project | Session ID |")
+        lines.append("|-------|---------|------------|")
+        for title, cwd, cli_id in sorted(desktop_missing_parent, key=lambda x: x[0]):
+            display_cwd = cwd.replace(home, "~")
+            lines.append(f"| {title} | {display_cwd} | {cli_id[:12]}... |")
 
     # Orphan sessions
     all_cwds = defaultdict(int)
