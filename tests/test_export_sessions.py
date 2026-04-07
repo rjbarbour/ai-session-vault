@@ -17,6 +17,14 @@ from export_sessions_to_obsidian import (
     codex_process_line,
     codex_summarise_function_call,
     parse_codex_session,
+    load_config,
+    slugify,
+    extract_custom_title,
+    load_codex_titles,
+    extract_codex_meta,
+    load_desktop_titles,
+    _is_interactive_session,
+    find_session_files,
 )
 
 
@@ -711,3 +719,411 @@ class TestObsidianCompat:
         for line in frontmatter_lines:
             key, _, val = line.partition(": ")
             assert key.strip(), f"Empty key in frontmatter: {line}"
+
+
+# ---------------------------------------------------------------------------
+# Slugify
+# ---------------------------------------------------------------------------
+
+class TestSlugify:
+    def test_basic(self):
+        assert slugify("Hello World") == "hello-world"
+
+    def test_special_chars(self):
+        assert slugify("What's up? (test)") == "whats-up-test"
+
+    def test_truncation(self):
+        result = slugify("a" * 100, max_len=20)
+        assert len(result) <= 20
+
+    def test_empty(self):
+        assert slugify("") == "untitled"
+
+    def test_xml_content(self):
+        assert slugify("<command>init</command>") == "commandinitcommand"
+
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+class TestLoadConfig:
+    def test_loads_config_file(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps({
+            "vault_path": str(tmp_path / "vault"),
+            "claude_projects": [str(tmp_path / "projects")],
+            "codex_sessions": str(tmp_path / "codex"),
+        }))
+        import export_sessions_to_obsidian as mod
+        monkeypatch.setattr(mod, "CONFIG_PATH", config)
+        cfg = load_config()
+        assert cfg["vault_path"] == str(tmp_path / "vault")
+        assert len(cfg["claude_projects"]) == 1
+
+    def test_falls_back_to_defaults(self, tmp_path, monkeypatch):
+        import export_sessions_to_obsidian as mod
+        monkeypatch.setattr(mod, "CONFIG_PATH", tmp_path / "nonexistent.json")
+        cfg = load_config()
+        assert "vault_path" in cfg
+        assert "claude_projects" in cfg
+
+    def test_expands_tilde(self, tmp_path, monkeypatch):
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps({
+            "vault_path": "~/test-vault",
+            "claude_projects": ["~/.claude/projects"],
+            "codex_sessions": "~/.codex/sessions",
+        }))
+        import export_sessions_to_obsidian as mod
+        monkeypatch.setattr(mod, "CONFIG_PATH", config)
+        cfg = load_config()
+        assert "~" not in cfg["vault_path"]
+        assert "~" not in cfg["claude_projects"][0]
+
+
+# ---------------------------------------------------------------------------
+# Custom title extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractCustomTitle:
+    def test_finds_custom_title(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"type": "permission-mode", "permissionMode": "default"},
+            {"type": "user", "message": {"content": "hello world"}},
+            {"type": "custom-title", "customTitle": "my-session-name", "sessionId": "abc"},
+        ])
+        assert extract_custom_title(f) == "my-session-name"
+
+    def test_no_custom_title(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello world"}},
+            {"type": "assistant", "message": {"content": "hi"}},
+        ])
+        assert extract_custom_title(f) == ""
+
+
+# ---------------------------------------------------------------------------
+# Codex title loading
+# ---------------------------------------------------------------------------
+
+class TestLoadCodexTitles:
+    def test_loads_titles(self, tmp_path):
+        index = tmp_path / "session_index.jsonl"
+        index.write_text(
+            json.dumps({"id": "abc-123", "thread_name": "Build a widget", "updated_at": "2026-01-01"}) + "\n"
+            + json.dumps({"id": "def-456", "thread_name": "Fix the bug", "updated_at": "2026-01-02"}) + "\n"
+        )
+        # load_codex_titles looks for session_index.jsonl in parent of the sessions path
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        titles = load_codex_titles(str(sessions_dir))
+        assert titles["abc-123"] == "Build a widget"
+        assert titles["def-456"] == "Fix the bug"
+
+    def test_missing_file(self, tmp_path):
+        titles = load_codex_titles(str(tmp_path / "nonexistent"))
+        assert titles == {}
+
+
+# ---------------------------------------------------------------------------
+# Codex meta extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractCodexMeta:
+    def test_extracts_id_and_cwd(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"timestamp": "t", "type": "session_meta", "payload": {
+                "id": "019cbf55-1c4a", "cwd": "/Users/rob_dev/projects/foo"
+            }},
+            {"timestamp": "t", "type": "response_item", "payload": {"type": "message"}},
+        ])
+        sid, cwd = extract_codex_meta(f)
+        assert sid == "019cbf55-1c4a"
+        assert cwd == "/Users/rob_dev/projects/foo"
+
+    def test_no_session_meta(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"timestamp": "t", "type": "response_item", "payload": {"type": "message"}},
+        ])
+        sid, cwd = extract_codex_meta(f)
+        assert sid == ""
+        assert cwd == ""
+
+
+# ---------------------------------------------------------------------------
+# Interactive session filter
+# ---------------------------------------------------------------------------
+
+class TestIsInteractiveSession:
+    def test_multi_turn_is_interactive(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "first question"}},
+            {"type": "assistant", "message": {"content": "answer"}},
+            {"type": "user", "message": {"content": "follow up"}},
+            {"type": "assistant", "message": {"content": "more"}},
+        ])
+        assert _is_interactive_session(f) is True
+
+    def test_single_turn_with_enqueue_filtered(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"type": "queue-operation", "operation": "enqueue", "content": "prompt"},
+            {"type": "queue-operation", "operation": "dequeue"},
+            {"type": "user", "message": {"content": "Generate a title for this session"}},
+            {"type": "assistant", "message": {"content": "Some Title"}},
+        ])
+        assert _is_interactive_session(f) is False
+
+    def test_single_turn_without_enqueue_kept(self, tmp_path):
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "a real one-turn session"}},
+            {"type": "assistant", "message": {"content": "done"}},
+        ])
+        assert _is_interactive_session(f) is True
+
+    def test_multi_turn_with_enqueue_kept(self, tmp_path):
+        """Multi-turn sessions are kept even if they have queue-operation."""
+        f = _make_jsonl(tmp_path, [
+            {"type": "queue-operation", "operation": "enqueue", "content": "prompt"},
+            {"type": "user", "message": {"content": "first"}},
+            {"type": "assistant", "message": {"content": "reply"}},
+            {"type": "user", "message": {"content": "second"}},
+            {"type": "assistant", "message": {"content": "reply2"}},
+        ])
+        assert _is_interactive_session(f) is True
+
+
+# ---------------------------------------------------------------------------
+# Export: source tag differentiation
+# ---------------------------------------------------------------------------
+
+class TestSourceTagDifferentiation:
+    def test_cli_session_gets_claude_cli_tag(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello there friend"},
+             "entrypoint": "cli", "cwd": "/Users/rob_dev/projects/test"},
+            {"type": "assistant", "message": {"content": "hi back"}},
+        ])
+        result = export_session(f, vault, source_tag="claude")
+        text = result.read_text()
+        assert "source: claude-cli" in text
+
+    def test_desktop_session_gets_claude_desktop_tag(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello there friend"},
+             "entrypoint": "claude-desktop", "cwd": "/Users/rob_dev/projects/test"},
+            {"type": "assistant", "message": {"content": "hi back"}},
+        ])
+        result = export_session(f, vault, source_tag="claude")
+        text = result.read_text()
+        assert "source: claude-desktop" in text
+
+    def test_desktop_detected_from_titles_lookup(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello there friend"},
+             "entrypoint": "cli", "cwd": "/Users/rob_dev/projects/test"},
+            {"type": "assistant", "message": {"content": "hi back"}},
+        ], name="abc12345.jsonl")
+        desktop_titles = {"abc12345": "My Desktop Session"}
+        result = export_session(f, vault, source_tag="claude", desktop_titles=desktop_titles)
+        text = result.read_text()
+        assert "source: claude-desktop" in text
+        assert "My Desktop Session" in text
+
+
+# ---------------------------------------------------------------------------
+# Export: account and project extraction
+# ---------------------------------------------------------------------------
+
+class TestAccountAndProject:
+    def test_account_extracted_from_cwd(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello there friend"},
+             "cwd": "/Users/rob_dev/DocsLocal/myproject"},
+            {"type": "assistant", "message": {"content": "hi back"}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        assert "account: rob_dev" in text
+        assert "project: /Users/rob_dev/DocsLocal/myproject" in text
+
+    def test_codex_project_from_session_meta(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"timestamp": "t", "type": "session_meta", "payload": {
+                "id": "019c-test", "cwd": "/Users/rob_dev/projects/codex_proj"
+            }},
+            {"timestamp": "t", "type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "test codex session here"}],
+            }},
+            {"timestamp": "t", "type": "response_item", "payload": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "reply from codex"}],
+            }},
+        ])
+        result = export_session(f, vault, source_tag="codex")
+        text = result.read_text()
+        assert "project: /Users/rob_dev/projects/codex_proj" in text
+        assert "account: rob_dev" in text
+
+
+# ---------------------------------------------------------------------------
+# Export: title chain with Codex titles
+# ---------------------------------------------------------------------------
+
+class TestCodexTitleIntegration:
+    def test_codex_thread_name_used_as_title(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"timestamp": "t", "type": "session_meta", "payload": {
+                "id": "abc-123-test", "cwd": "/tmp"
+            }},
+            {"timestamp": "t", "type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "do something interesting"}],
+            }},
+            {"timestamp": "t", "type": "response_item", "payload": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "done"}],
+            }},
+        ])
+        codex_titles = {"abc-123-test": "Build Game of Life"}
+        result = export_session(f, vault, source_tag="codex", codex_titles=codex_titles)
+        text = result.read_text()
+        assert "Build Game of Life" in text
+        assert "title_source: codex" in text
+
+
+# ---------------------------------------------------------------------------
+# Export: double quotes escaped in YAML
+# ---------------------------------------------------------------------------
+
+class TestYamlEscaping:
+    def test_double_quotes_in_title_escaped(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": 'Build "The Widget" for production use'},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": "OK"}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        # Double quotes should be replaced with single quotes in YAML
+        assert '"The Widget"' not in text.split("---")[1]
+        assert "'The Widget'" in text.split("---")[1]
+
+
+# ---------------------------------------------------------------------------
+# Export: XML tags stripped from first message fallback
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Find session files
+# ---------------------------------------------------------------------------
+
+class TestFindSessionFiles:
+    def test_finds_claude_in_direct_project_dir(self, tmp_path):
+        """When claude_projects points to a dir with JSONL, find them."""
+        proj = tmp_path / "project"
+        proj.mkdir()
+        # Create multi-turn JSONL (passes interactive filter)
+        f = proj / "session1.jsonl"
+        f.write_text(
+            json.dumps({"type": "user", "message": {"content": "first"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "second"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply2"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        found = find_session_files([proj], codex)
+        assert len(found) == 1
+        assert found[0][0] == "claude"
+
+    def test_finds_claude_in_parent_dir(self, tmp_path):
+        """When claude_projects points to parent, enumerate subdirs."""
+        parent = tmp_path / "projects"
+        parent.mkdir()
+        proj_a = parent / "project-a"
+        proj_a.mkdir()
+        f = proj_a / "session1.jsonl"
+        f.write_text(
+            json.dumps({"type": "user", "message": {"content": "first"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "second"}}) + "\n"
+        )
+        proj_b = parent / "project-b"
+        proj_b.mkdir()
+        # Single-turn without enqueue — should be kept
+        g = proj_b / "session2.jsonl"
+        g.write_text(
+            json.dumps({"type": "user", "message": {"content": "only turn"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        found = find_session_files([parent], codex)
+        assert len(found) == 2
+
+    def test_filters_single_turn_enqueue(self, tmp_path):
+        """Single-turn sessions with queue-operation are filtered out."""
+        proj = tmp_path / "project"
+        proj.mkdir()
+        f = proj / "enrichment-call.jsonl"
+        f.write_text(
+            json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "prompt"}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "Generate a title"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "Title Here"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        found = find_session_files([proj], codex)
+        assert len(found) == 0
+
+    def test_finds_codex_sessions(self, tmp_path):
+        proj = tmp_path / "claude"
+        proj.mkdir()
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        f = codex / "rollout-2026-03-05T18-34-06-abc123.jsonl"
+        f.write_text(
+            json.dumps({"timestamp": "t", "type": "session_meta", "payload": {"id": "abc"}}) + "\n"
+        )
+        found = find_session_files([proj], codex)
+        assert len(found) == 1
+        assert found[0][0] == "codex"
+
+    def test_skips_nonexistent_dirs(self, tmp_path):
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        found = find_session_files([tmp_path / "nonexistent"], codex)
+        assert len(found) == 0
+
+
+class TestXmlStripping:
+    def test_command_tags_stripped_from_title(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "<command-message>init</command-message>\n<command-name>/init</command-name>"},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": "analyzing..."}},
+            {"type": "user", "message": {"content": "do more stuff please"}},
+            {"type": "assistant", "message": {"content": "done"}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        assert "command-message" not in text.split("---")[1]
+        assert "init /init" in text.split("---")[1]
