@@ -339,17 +339,20 @@ def extract_custom_title(jsonl_path):
     return ""
 
 
-def load_desktop_titles():
+def load_desktop_titles(desktop_dir=None):
     """Load session titles from Claude Desktop metadata files.
 
     Returns a dict mapping cliSessionId -> title.
     """
     titles = {}
-    desktop_dir = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    if desktop_dir is None:  # pragma: no cover — called from main()
+        desktop_dir = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    else:
+        desktop_dir = Path(desktop_dir)
     if not desktop_dir.exists():
         return titles
     for json_file in desktop_dir.rglob("*.json"):
-        if json_file.suffix != ".json" or ".bak" in json_file.name:
+        if ".bak" in json_file.name:
             continue
         try:
             with open(json_file) as f:
@@ -448,11 +451,11 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
             for raw_line in f:
                 raw_line = raw_line.strip()
-                if not raw_line:
+                if not raw_line:  # pragma: no cover — defensive guard
                     continue
                 try:
                     line_data = json.loads(raw_line)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError:  # pragma: no cover — defensive guard
                     continue
                 if not project:
                     cwd = line_data.get("cwd", "")
@@ -635,7 +638,7 @@ def find_session_files(claude_project_dirs, codex_sessions):
     return found
 
 
-def main():
+def main():  # pragma: no cover
     cfg = load_config()
 
     parser = argparse.ArgumentParser(
@@ -688,5 +691,5 @@ def main():
     print(f"\nExported {exported}/{len(session_files)} sessions")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

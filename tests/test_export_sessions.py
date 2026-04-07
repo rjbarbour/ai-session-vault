@@ -1112,6 +1112,328 @@ class TestFindSessionFiles:
         assert len(found) == 0
 
 
+# ---------------------------------------------------------------------------
+# Desktop title loading
+# ---------------------------------------------------------------------------
+
+class TestLoadDesktopTitles:
+    def test_loads_titles_from_dir(self, tmp_path):
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        (desktop / "local_abc.json").write_text(json.dumps({
+            "sessionId": "local_abc",
+            "cliSessionId": "cli-123",
+            "title": "My Desktop Session",
+            "cwd": "/tmp",
+        }))
+        (desktop / "local_def.json").write_text(json.dumps({
+            "sessionId": "local_def",
+            "cliSessionId": "cli-456",
+            "title": "Another Session",
+            "cwd": "/tmp",
+        }))
+        titles = load_desktop_titles(str(desktop))
+        assert titles["cli-123"] == "My Desktop Session"
+        assert titles["cli-456"] == "Another Session"
+
+    def test_missing_dir(self, tmp_path):
+        titles = load_desktop_titles(str(tmp_path / "nonexistent"))
+        assert titles == {}
+
+    def test_skips_bak_files(self, tmp_path):
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        # .json.bak won't match *.json glob, but test the .bak check anyway
+        # by creating a file whose name contains .bak but ends in .json
+        (desktop / "local_abc.json.bak.json").write_text(json.dumps({
+            "cliSessionId": "cli-bak", "title": "Backup",
+        }))
+        titles = load_desktop_titles(str(desktop))
+        assert "cli-bak" not in titles
+
+    def test_skips_malformed_json(self, tmp_path):
+        desktop = tmp_path / "desktop"
+        desktop.mkdir()
+        (desktop / "local_bad.json").write_text("not json{{{")
+        titles = load_desktop_titles(str(desktop))
+        assert titles == {}
+
+
+# ---------------------------------------------------------------------------
+# Additional summarise_tool_use branches
+# ---------------------------------------------------------------------------
+
+class TestSummariseToolUseExtended:
+    def test_edit(self):
+        block = {"name": "Edit", "input": {"file_path": "/foo/bar.py"}}
+        assert summarise_tool_use(block) == "Edit: /foo/bar.py"
+
+    def test_glob(self):
+        block = {"name": "Glob", "input": {"pattern": "**/*.ts"}}
+        assert summarise_tool_use(block) == "Glob: **/*.ts"
+
+    def test_agent(self):
+        block = {"name": "Agent", "input": {"description": "search for config files"}}
+        assert "search for config files" in summarise_tool_use(block)
+
+    def test_todowrite(self):
+        block = {"name": "TodoWrite", "input": {}}
+        assert summarise_tool_use(block) == "[TodoWrite update]"
+
+    def test_websearch(self):
+        block = {"name": "WebSearch", "input": {"query": "python async patterns"}}
+        assert "python async patterns" in summarise_tool_use(block)
+
+    def test_webfetch(self):
+        block = {"name": "WebFetch", "input": {"url": "https://example.com/api"}}
+        assert "example.com" in summarise_tool_use(block)
+
+
+# ---------------------------------------------------------------------------
+# Additional process_message branches
+# ---------------------------------------------------------------------------
+
+class TestProcessMessageExtended:
+    def test_user_message_as_string(self):
+        """User message where message field is a string, not a dict."""
+        msg = {"type": "user", "message": "hello from string message"}
+        result = process_message(msg)
+        assert result == ("user", "hello from string message")
+
+    def test_assistant_message_as_string_content(self):
+        """Assistant message where content is a plain string."""
+        msg = {"type": "assistant", "message": {"content": "plain string response"}}
+        result = process_message(msg)
+        assert result == ("assistant", "plain string response")
+
+    def test_assistant_message_field_as_string(self):
+        """Assistant message where message field is a string."""
+        msg = {"type": "assistant", "message": "string message field"}
+        result = process_message(msg)
+        assert result == ("assistant", "string message field")
+
+    def test_user_message_non_dict_non_string(self):
+        """User message where message field is neither dict nor string."""
+        msg = {"type": "user", "message": 42}
+        assert process_message(msg) is None
+
+    def test_assistant_message_non_dict_non_string(self):
+        msg = {"type": "assistant", "message": 42}
+        assert process_message(msg) is None
+
+    def test_assistant_content_list_with_string_block(self):
+        """Assistant content list containing plain strings."""
+        msg = {"type": "assistant", "message": {"content": ["plain string block"]}}
+        result = process_message(msg)
+        assert result is not None
+        assert "plain string block" in result[1]
+
+
+# ---------------------------------------------------------------------------
+# Additional codex_process_line branches
+# ---------------------------------------------------------------------------
+
+class TestCodexProcessLineExtended:
+    def test_empty_content_list(self):
+        line = {
+            "timestamp": "t", "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": []},
+        }
+        assert codex_process_line(line) is None
+
+    def test_non_dict_first_block(self):
+        line = {
+            "timestamp": "t", "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": ["just a string"]},
+        }
+        assert codex_process_line(line) is None
+
+    def test_unknown_message_role(self):
+        line = {
+            "timestamp": "t", "type": "response_item",
+            "payload": {"type": "message", "role": "system", "content": [{"type": "text", "text": "sys"}]},
+        }
+        assert codex_process_line(line) is None
+
+
+# ---------------------------------------------------------------------------
+# Export: custom title branch
+# ---------------------------------------------------------------------------
+
+class TestExportCustomTitle:
+    def test_custom_title_used_in_export(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello there friend"},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": "hi back"}},
+            {"type": "custom-title", "customTitle": "my-custom-session"},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        assert "my-custom-session" in text
+        assert "title_source: custom" in text
+        assert "my-custom-session" in result.name
+
+
+# ---------------------------------------------------------------------------
+# Export: assistant message truncation
+# ---------------------------------------------------------------------------
+
+class TestAssistantTruncation:
+    def test_long_assistant_message_truncated(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "give me a long response please"},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": "x" * 10000}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        assert "[Response truncated" in text
+
+
+# ---------------------------------------------------------------------------
+# Codex: load_codex_titles default path branch
+# ---------------------------------------------------------------------------
+
+class TestLoadCodexTitlesDefault:
+    def test_no_path_uses_home(self):
+        """When no path given, falls back to ~/.codex/session_index.jsonl."""
+        # This just verifies it doesn't crash — the file may or may not exist
+        titles = load_codex_titles()
+        assert isinstance(titles, dict)
+
+
+# ---------------------------------------------------------------------------
+# Detect format: edge cases
+# ---------------------------------------------------------------------------
+
+class TestDetectFormatExtended:
+    def test_empty_lines_skipped(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text("\n\n" + json.dumps({"type": "user", "message": {}}) + "\n")
+        assert detect_format(f) == "claude"
+
+    def test_malformed_json_skipped(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text("not json\n" + json.dumps({"type": "user", "message": {}}) + "\n")
+        assert detect_format(f) == "claude"
+
+    def test_unknown_type_defaults_claude(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text(json.dumps({"type": "unknown_thing", "data": 123}) + "\n")
+        assert detect_format(f) == "claude"
+
+
+# ---------------------------------------------------------------------------
+# Malformed JSONL handling
+# ---------------------------------------------------------------------------
+
+class TestMalformedJsonl:
+    def test_parse_claude_handles_blank_lines_and_bad_json(self, tmp_path):
+        from export_sessions_to_obsidian import parse_claude_session
+        f = tmp_path / "messy.jsonl"
+        f.write_text(
+            "\n"
+            "not valid json\n"
+            + json.dumps({"type": "user", "message": {"content": "real message here"}}) + "\n"
+            "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+        )
+        messages = parse_claude_session(f)
+        assert len(messages) == 2
+        assert messages[0] == ("user", "real message here")
+
+    def test_parse_codex_handles_blank_lines_and_bad_json(self, tmp_path):
+        f = tmp_path / "messy.jsonl"
+        f.write_text(
+            "\n"
+            "{broken\n"
+            + json.dumps({"timestamp": "t", "type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "codex question"}],
+            }}) + "\n"
+            + json.dumps({"timestamp": "t", "type": "response_item", "payload": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "codex answer"}],
+            }}) + "\n"
+        )
+        messages = parse_codex_session(f)
+        assert len(messages) == 2
+
+    def test_extract_custom_title_handles_blank_and_bad(self, tmp_path):
+        f = tmp_path / "messy.jsonl"
+        f.write_text(
+            "\n"
+            "bad json\n"
+            + json.dumps({"type": "user", "message": {"content": "hello"}}) + "\n"
+        )
+        assert extract_custom_title(f) == ""
+
+    def test_extract_codex_meta_handles_blank_and_bad(self, tmp_path):
+        f = tmp_path / "messy.jsonl"
+        f.write_text(
+            "\n"
+            "{corrupt\n"
+            + json.dumps({"timestamp": "t", "type": "response_item", "payload": {}}) + "\n"
+        )
+        sid, cwd = extract_codex_meta(f)
+        assert sid == ""
+
+    def test_load_codex_titles_handles_blank_and_bad(self, tmp_path):
+        index = tmp_path / "session_index.jsonl"
+        index.write_text(
+            "\n"
+            "not json\n"
+            + json.dumps({"id": "abc", "thread_name": "Good Title"}) + "\n"
+        )
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        titles = load_codex_titles(str(sessions))
+        assert titles["abc"] == "Good Title"
+
+    def test_export_session_handles_no_cwd_in_metadata(self, tmp_path):
+        """When no JSONL line has cwd, falls back to parent dir name."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "hello there friend"}},
+            {"type": "assistant", "message": {"content": "hi back"}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        # project falls back to parent directory name
+        assert f"project: {tmp_path.name}" in text
+
+
+# ---------------------------------------------------------------------------
+# find_session_files: non-dir child in parent
+# ---------------------------------------------------------------------------
+
+class TestFindSessionFilesEdgeCases:
+    def test_non_dir_child_in_parent_skipped(self, tmp_path):
+        parent = tmp_path / "projects"
+        parent.mkdir()
+        # File, not a dir
+        (parent / "README.md").write_text("not a project")
+        # Actual project dir
+        proj = parent / "real-project"
+        proj.mkdir()
+        f = proj / "session.jsonl"
+        f.write_text(
+            json.dumps({"type": "user", "message": {"content": "first"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "second"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+        found = find_session_files([parent], codex)
+        assert len(found) == 1
+
+
 class TestXmlStripping:
     def test_command_tags_stripped_from_title(self, tmp_path):
         vault = tmp_path / "vault"
