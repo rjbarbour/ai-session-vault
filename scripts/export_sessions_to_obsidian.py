@@ -732,15 +732,16 @@ def main():  # pragma: no cover
     vault = args.vault or Path(cfg["vault_path"])
 
     # Resolve all session paths relative to the target account
-    codex_sessions = args.codex_sessions or Path(
-        str(cfg["codex_sessions"]).replace(str(Path.home()), str(home))
-        if args.account else cfg["codex_sessions"]
-    )
+    if args.codex_sessions:
+        codex_sessions = args.codex_sessions
+    elif args.account:
+        codex_sessions = home / ".codex" / "sessions"
+    else:
+        codex_sessions = Path(cfg["codex_sessions"])
 
     if args.claude_project:
         claude_project_dirs = [args.claude_project]
     elif args.account:
-        # For other accounts, scan their .claude/projects
         claude_project_dirs = [home / ".claude" / "projects"]
     else:
         claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
