@@ -716,16 +716,32 @@ def main():  # pragma: no cover
         description="Export Claude Code and Codex sessions to Obsidian"
     )
     parser.add_argument("--vault", type=Path, default=None)
+    parser.add_argument("--account", default=None,
+                        help="macOS account to export (resolves all paths from /Users/<account>)")
     parser.add_argument("--claude-project", type=Path, default=None,
                         help="Single Claude project dir (overrides config.json)")
     parser.add_argument("--codex-sessions", type=Path, default=None)
     args = parser.parse_args()
 
+    # Resolve home directory for the target account
+    if args.account:
+        home = Path(f"/Users/{args.account}")
+    else:
+        home = Path.home()
+
     vault = args.vault or Path(cfg["vault_path"])
-    codex_sessions = args.codex_sessions or Path(cfg["codex_sessions"])
+
+    # Resolve all session paths relative to the target account
+    codex_sessions = args.codex_sessions or Path(
+        str(cfg["codex_sessions"]).replace(str(Path.home()), str(home))
+        if args.account else cfg["codex_sessions"]
+    )
 
     if args.claude_project:
         claude_project_dirs = [args.claude_project]
+    elif args.account:
+        # For other accounts, scan their .claude/projects
+        claude_project_dirs = [home / ".claude" / "projects"]
     else:
         claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
 
@@ -733,8 +749,12 @@ def main():  # pragma: no cover
         print(f"Vault directory not found: {vault}", file=sys.stderr)
         sys.exit(1)
 
-    desktop_titles = load_desktop_titles()
-    cowork_titles, cowork_jsonl = load_cowork_sessions()
+    # Load title sources from the target account's paths
+    desktop_dir = home / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    cowork_dir = home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+
+    desktop_titles = load_desktop_titles(str(desktop_dir))
+    cowork_titles, cowork_jsonl = load_cowork_sessions(str(cowork_dir))
     codex_titles = load_codex_titles(str(codex_sessions))
 
     session_files = find_session_files(claude_project_dirs, codex_sessions,
