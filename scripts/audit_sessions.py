@@ -22,35 +22,94 @@ from export_sessions_to_obsidian import _is_interactive_session, load_config
 
 
 def scan_project_roots(home):
-    """Find all project root directories and their children."""
+    """Find all project root directories and their children.
+
+    Auto-discovers roots by scanning for common project locations and
+    iCloud TMD subfolders. Works for any account's home directory.
+    """
+    account = os.path.basename(home)
     docs = os.path.join(home, "Documents")
 
-    tmd_name = None
-    if os.path.isdir(docs):
-        for item in os.listdir(docs):
-            if "TMD" in item or "MacBook" in item:
-                full = os.path.join(docs, item)
-                if os.path.isdir(full):
-                    tmd_name = item
-                    break
-
-    roots = [
+    # Standard root candidates
+    root_candidates = [
         ("~/DocsLocal", os.path.join(home, "DocsLocal")),
+        ("~/projects", os.path.join(home, "projects")),
+        ("~/Documents", docs),
+        ("~/Documents/Projects", os.path.join(docs, "Projects")),
         ("~/Documents/GitHub", os.path.join(docs, "GitHub")),
     ]
-    if tmd_name:
-        tmd = os.path.join(docs, tmd_name)
-        roots.append(("~/Documents/TMD/GitHub", os.path.join(tmd, "GitHub")))
-        roots.append(("~/Documents/TMD/Projects", os.path.join(tmd, "Projects")))
 
+    # Check for iCloud TMD subfolder
+    if os.path.isdir(docs):
+        try:
+            for item in os.listdir(docs):
+                if "TMD" in item or "MacBook" in item:
+                    tmd = os.path.join(docs, item)
+                    if os.path.isdir(tmd):
+                        root_candidates.append(("~/Documents/TMD", tmd))
+                        for sub in ("GitHub", "Projects"):
+                            sub_path = os.path.join(tmd, sub)
+                            if os.path.isdir(sub_path):
+                                root_candidates.append(
+                                    (f"~/Documents/TMD/{sub}", sub_path))
+                        break
+        except PermissionError:
+            pass
+
+    # Also add roots discovered from session cwds (in case projects are
+    # in unusual locations)
+    cwd_roots = set()
+    projects_root = os.path.join(home, ".claude", "projects")
+    if os.path.isdir(projects_root):
+        for proj in os.listdir(projects_root):
+            proj_path = os.path.join(projects_root, proj)
+            if not os.path.isdir(proj_path):
+                continue
+            for f in os.listdir(proj_path):
+                if not f.endswith(".jsonl"):
+                    continue
+                full = os.path.join(proj_path, f)
+                try:
+                    with open(full, errors="replace") as fh:
+                        for line in fh:
+                            try:
+                                data = json.loads(line)
+                                cwd = data.get("cwd", "")
+                                if cwd and cwd.startswith(home):
+                                    # Extract the parent of the project dir
+                                    parent = os.path.dirname(cwd)
+                                    if parent != home and parent not in [p for _, p in root_candidates]:
+                                        cwd_roots.add(parent)
+                                break
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                except (OSError, PermissionError):
+                    pass
+
+    for cwd_root in sorted(cwd_roots):
+        label = cwd_root.replace(home, "~")
+        root_candidates.append((label, cwd_root))
+
+    # Deduplicate and collect projects from each root
+    seen_roots = set()
+    skip_names = {"obsidian_shared_vault_session_index", ".DS_Store"}
     projects = []
-    for label, path in roots:
-        if not os.path.isdir(path):
+
+    for label, path in root_candidates:
+        if path in seen_roots or not os.path.isdir(path):
             continue
-        for item in sorted(os.listdir(path)):
-            full = os.path.join(path, item)
-            if os.path.isdir(full) and not item.startswith("."):
-                projects.append((label, item, full))
+        seen_roots.add(path)
+        try:
+            for item in sorted(os.listdir(path)):
+                if item.startswith(".") or item in skip_names:
+                    continue
+                full = os.path.join(path, item)
+                if os.path.isdir(full):
+                    # Skip if this dir is already a root we'll scan
+                    if full not in [p for _, p in root_candidates]:
+                        projects.append((label, item, full))
+        except PermissionError:
+            pass
 
     return projects
 
@@ -180,8 +239,11 @@ def scan_cowork_sessions(home):
     return metadata_cwds, jsonl_count
 
 
-def scan_vault(vault_path):
-    """Count vault entries by project and source, reading only frontmatter."""
+def scan_vault(vault_path, account_filter=None):
+    """Count vault entries by project and source, reading only frontmatter.
+
+    If account_filter is set, only count entries matching that account.
+    """
     by_project = defaultdict(int)
     by_source = defaultdict(int)
     total = 0
@@ -194,8 +256,8 @@ def scan_vault(vault_path):
         full = os.path.join(vault_path, f)
         project = ""
         source = ""
+        account = ""
         with open(full) as fh:
-            # Read only frontmatter (first ~30 lines)
             first_line = fh.readline()
             if first_line.strip() != "---":
                 continue
@@ -207,6 +269,10 @@ def scan_vault(vault_path):
                     project = line.partition(": ")[2].strip().strip('"')
                 elif line.startswith("source:"):
                     source = line.partition(": ")[2].strip().strip('"')
+                elif line.startswith("account:"):
+                    account = line.partition(": ")[2].strip().strip('"')
+        if account_filter and account != account_filter:
+            continue
         if project or source:
             total += 1
             if project:
@@ -298,7 +364,7 @@ def generate_report(home, vault_path, account):
     desktop, desktop_missing_parent = scan_desktop_sessions(home)
     codex = scan_codex_sessions(home)
     cowork_cwds, cowork_jsonl_total = scan_cowork_sessions(home)
-    vault_projects, vault_sources, vault_total = scan_vault(vault_path)
+    vault_projects, vault_sources, vault_total = scan_vault(vault_path, account_filter=account)
 
     known_paths = [full for _, _, full in projects]
     aliases = build_path_aliases(home)
@@ -441,7 +507,10 @@ def main():
     parser.add_argument("--vault", type=Path, default=None)
     args = parser.parse_args()
 
-    home = os.path.expanduser("~")
+    if args.account == os.environ.get("USER", ""):
+        home = os.path.expanduser("~")
+    else:
+        home = f"/Users/{args.account}"
     vault = str(args.vault or cfg["vault_path"])
 
     report = generate_report(home, vault, args.account)

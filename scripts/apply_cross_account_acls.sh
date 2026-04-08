@@ -1,9 +1,14 @@
 #!/bin/bash
 # Apply read-only ACLs so the current user can read Claude/Codex session data
-# from other macOS accounts.
+# and project directories from other macOS accounts.
 #
 # Reads account list from config.json ("accounts" array).
 # Must be run with sudo: sudo bash scripts/apply_cross_account_acls.sh
+#
+# NOTE: ~/Documents, ~/Desktop, ~/Downloads are protected by macOS TCC
+# (Transparency, Consent and Control) in addition to Unix permissions.
+# ACLs alone are not sufficient — Terminal must have Full Disk Access:
+#   System Settings > Privacy & Security > Full Disk Access > add Terminal
 #
 # To remove: re-run with --remove
 
@@ -11,6 +16,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/../config.json"
+LOG_FILE="$SCRIPT_DIR/../acl_apply.log"
+
+log() {
+    echo "$1"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
+}
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Error: config.json not found. Copy config.example.json and add an 'accounts' array." >&2
@@ -48,27 +59,73 @@ fi
 
 ACL_ENTRY="$ACL_USER allow read,execute,readattr,readextattr,readsecurity,list,search,file_inherit,directory_inherit"
 
-# Target session data directories per account.
-# Uses .codex/sessions (not .codex root) to avoid SIP-protected binaries.
+log "=== ACL $ACTION started for accounts: $ACCOUNTS ==="
+log "ACL user: $ACL_USER"
+log ""
+
+# Ensure home directories are traversable.
 for account in $ACCOUNTS; do
+    home="/Users/$account"
+    if [[ -d "$home" ]]; then
+        if chmod +a "$ACL_USER allow execute,readattr,search" "$home" 2>/dev/null; then
+            log "  TRAVERSE OK: $home"
+        else
+            log "  TRAVERSE FAILED: $home"
+        fi
+    fi
+done
+log ""
+
+# Target session data and project directories per account.
+for account in $ACCOUNTS; do
+    log "--- $account ---"
     for dir in \
         "/Users/$account/.claude" \
         "/Users/$account/.codex/sessions" \
-        "/Users/$account/Library/Application Support/Claude"; do
+        "/Users/$account/Library/Application Support/Claude" \
+        "/Users/$account/Documents"; do
 
         if [[ ! -e "$dir" ]]; then
-            echo "  SKIP (not found): $dir"
+            log "  SKIP (not found): $dir"
             continue
         fi
+
         if [[ "$ACTION" == "remove" ]]; then
-            echo "  REMOVE ACL: $dir"
-            chmod -R -a "$ACL_ENTRY" "$dir" 2>/dev/null || true
+            if chmod -R -a "$ACL_ENTRY" "$dir" 2>/dev/null; then
+                log "  REMOVE OK: $dir"
+            else
+                log "  REMOVE PARTIAL: $dir (some entries may remain)"
+            fi
         else
-            echo "  APPLY ACL:  $dir"
-            chmod -R -h +a "$ACL_ENTRY" "$dir" 2>&1 | grep -v "Operation not permitted\|No such file or directory" || true
+            # Apply to the directory itself first
+            if chmod +a "$ACL_ENTRY" "$dir" 2>/dev/null; then
+                log "  APPLY OK: $dir"
+            else
+                log "  APPLY FAILED: $dir (may need Full Disk Access for TCC-protected folders)"
+            fi
+            # Then recursively to contents (errors filtered for known non-issues)
+            fail_count=$(chmod -R -h +a "$ACL_ENTRY" "$dir" 2>&1 | grep -cv "Operation not permitted\|No such file or directory\|^$" || true)
+            if [[ "$fail_count" -gt 0 ]]; then
+                log "    WARN: $fail_count unexpected errors during recursive apply"
+            fi
+        fi
+    done
+    log ""
+done
+
+# Verify access
+log "=== Verification ==="
+for account in $ACCOUNTS; do
+    for dir in ".claude" "Documents"; do
+        target="/Users/$account/$dir"
+        if [[ -d "$target" ]] && ls "$target" >/dev/null 2>&1; then
+            log "  READABLE: $target"
+        elif [[ -d "$target" ]]; then
+            log "  NOT READABLE: $target (TCC may be blocking — grant Terminal Full Disk Access)"
         fi
     done
 done
 
-echo ""
-echo "Done. Verify with: ls -le /Users/<account>/.claude/"
+log ""
+log "Log written to: $LOG_FILE"
+log "Done."
