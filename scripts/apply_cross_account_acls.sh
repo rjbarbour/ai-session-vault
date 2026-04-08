@@ -28,17 +28,19 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     exit 1
 fi
 
-ACL_USER=$(python3 -c "
-import json, os
-cfg = json.load(open('$CONFIG_FILE'))
-print(cfg.get('acl_user', os.environ.get('SUDO_USER', '$(whoami)')))
-")
+ACL_USER=$(python3 - "$CONFIG_FILE" <<'PYEOF'
+import json, os, sys
+cfg = json.load(open(sys.argv[1]))
+print(cfg.get("acl_user", os.environ.get("SUDO_USER", os.getlogin())))
+PYEOF
+)
 
-ACCOUNTS=$(python3 -c "
-import json
-cfg = json.load(open('$CONFIG_FILE'))
-print(' '.join(cfg.get('accounts', [])))
-")
+ACCOUNTS=$(python3 - "$CONFIG_FILE" <<'PYEOF'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+print(" ".join(cfg.get("accounts", [])))
+PYEOF
+)
 
 if [[ -z "$ACCOUNTS" ]]; then
     echo "No accounts configured in config.json. Add an 'accounts' array, e.g.:"

@@ -18,7 +18,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+SCRIPT_DIR = str(Path(__file__).resolve().parent)
+sys.path.insert(0, SCRIPT_DIR)
 from export_sessions_to_obsidian import load_config
 
 
@@ -50,7 +51,7 @@ def get_accounts(cfg):
 
 def run_export(account, is_current_user):
     """Run the export script for one account."""
-    cmd = [sys.executable, "scripts/export_sessions_to_obsidian.py"]
+    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "export_sessions_to_obsidian.py")]
     if not is_current_user:
         cmd.extend(["--account", account])
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -59,7 +60,7 @@ def run_export(account, is_current_user):
 
 def run_enrich(workers, skip_enriched=True):
     """Run the enrichment script."""
-    cmd = [sys.executable, "scripts/generate_titles.py", "--workers", str(workers)]
+    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "generate_titles.py"), "--workers", str(workers)]
     if skip_enriched:
         cmd.append("--skip-enriched")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -69,7 +70,7 @@ def run_enrich(workers, skip_enriched=True):
 def run_dedupe():
     """Run the deduplication script."""
     result = subprocess.run(
-        [sys.executable, "scripts/dedupe_vault.py"],
+        [sys.executable, os.path.join(SCRIPT_DIR, "dedupe_vault.py")],
         capture_output=True, text=True, timeout=120,
     )
     return result
@@ -77,7 +78,7 @@ def run_dedupe():
 
 def run_audit(account, is_current_user, output_dir=None):
     """Run the audit script for one account."""
-    cmd = [sys.executable, "scripts/audit_sessions.py", "--account", account]
+    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "audit_sessions.py"), "--account", account]
     if output_dir:
         output_file = os.path.join(
             output_dir,

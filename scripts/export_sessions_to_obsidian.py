@@ -623,10 +623,12 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     lines.append(f"source: {source_tag}")
     lines.append(f"account: {account}")
     lines.append(f"project: {project}")
-    lines.append(f"title: \"{title_candidate.replace(chr(34), "'")}\"")
+    safe_title = title_candidate.replace(chr(34), "'").replace("\n", " ")
+    lines.append(f"title: \"{safe_title}\"")
     lines.append(f"title_source: {title_source}")
     if first_msg_snippet:
-        lines.append(f"first_message: \"{first_msg_snippet.replace(chr(34), "'")}\"")
+        safe_snippet = first_msg_snippet.replace(chr(34), "'").replace("\n", " ")
+        lines.append(f"first_message: \"{safe_snippet}\"")
 
     lines.append(f"user_messages: {user_count}")
     lines.append(f"assistant_messages: {assistant_count}")

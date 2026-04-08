@@ -32,7 +32,9 @@ def parse_frontmatter(text):
     """Extract frontmatter as a dict and return (frontmatter_dict, body)."""
     if not text.startswith("---\n"):
         return {}, text
-    end = text.index("---", 4)
+    end = text.find("---", 4)
+    if end == -1:
+        return {}, text
     fm_text = text[4:end]
     body = text[end + 4:]
     fm = {}
@@ -115,8 +117,8 @@ def check_claude_available():
     try:
         result = subprocess.run(
             ["claude", "--model", "haiku", "-p",
-             "--system-prompt", "Reply with just OK", "test"],
-            capture_output=True, text=True, timeout=15,
+             "--system-prompt", "Reply with just OK"],
+            input="test", capture_output=True, text=True, timeout=15,
         )
         if result.returncode != 0:
             stderr = result.stderr.strip()
@@ -147,8 +149,8 @@ def enrich_session(md_content):
     try:
         result = subprocess.run(
             ["claude", "--model", "haiku", "-p",
-             "--system-prompt", ENRICHMENT_SYSTEM_PROMPT, prompt],
-            capture_output=True, text=True, timeout=90,
+             "--system-prompt", ENRICHMENT_SYSTEM_PROMPT],
+            input=prompt, capture_output=True, text=True, timeout=90,
         )
         if result.returncode != 0:
             return None

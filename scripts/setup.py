@@ -96,7 +96,8 @@ def check_claude_cli():
     try:
         result = subprocess.run(
             ["claude", "--model", "haiku", "-p",
-             "--system-prompt", "Reply with just OK", "test"],
+             "--system-prompt", "Reply with just OK"],
+            input="test",
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
