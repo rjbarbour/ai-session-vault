@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from export_sessions_to_obsidian import _is_interactive_session, load_config
+from export_sessions_to_obsidian import _is_interactive_session, check_dir, load_config
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ def scan_cli_sessions(home):
     """Count interactive CLI sessions by cwd, including subagent files."""
     projects_root = os.path.join(home, ".claude", "projects")
     cwd_counts = defaultdict(int)
-    if not os.path.isdir(projects_root):
+    if not check_dir(projects_root, f"CLI sessions ({projects_root})"):
         return cwd_counts
 
     for proj_dir in os.listdir(projects_root):
@@ -179,7 +179,7 @@ def scan_desktop_sessions(home):
     )
     cwd_counts = defaultdict(int)
     missing_parent = []
-    if not os.path.isdir(desktop_dir):
+    if not check_dir(desktop_dir, f"Desktop sessions ({desktop_dir})"):
         return cwd_counts, missing_parent
 
     projects_root = os.path.join(home, ".claude", "projects")
@@ -214,7 +214,7 @@ def scan_codex_sessions(home):
     """Count Codex sessions by cwd from session_meta."""
     sessions_dir = os.path.join(home, ".codex", "sessions")
     cwd_counts = defaultdict(int)
-    if not os.path.isdir(sessions_dir):
+    if not check_dir(sessions_dir, f"Codex sessions ({sessions_dir})"):
         return cwd_counts
 
     for root, dirs, files in os.walk(sessions_dir):
@@ -242,7 +242,7 @@ def scan_cowork_sessions(home):
     )
     metadata_cwds = defaultdict(int)
     jsonl_count = 0
-    if not os.path.isdir(cowork_dir):
+    if not check_dir(cowork_dir, f"Co-work sessions ({cowork_dir})"):
         return metadata_cwds, jsonl_count
 
     for root, dirs, files in os.walk(cowork_dir):

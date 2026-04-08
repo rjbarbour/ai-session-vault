@@ -28,6 +28,32 @@ from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
+
+def check_dir(path, label=""):
+    """Check if a directory exists and is readable.
+
+    Returns True if accessible, False if not found, and prints a warning
+    if the path exists but is not readable (permission denied).
+    """
+    p = Path(path)
+    try:
+        p.stat()
+    except PermissionError:
+        print(f"WARNING: {label or path} exists but permission denied — "
+              "re-run apply_cross_account_acls.sh with sudo", file=sys.stderr)
+        return False
+    except OSError:
+        return False
+    if not p.is_dir():
+        return False
+    try:
+        list(p.iterdir())
+    except PermissionError:
+        print(f"WARNING: {label or path} not readable — "
+              "re-run apply_cross_account_acls.sh with sudo", file=sys.stderr)
+        return False
+    return True
+
 GENERIC_DEFAULTS = {
     "vault_path": str(Path.home() / "obsidian-session-vault"),
     "claude_projects": [str(Path.home() / ".claude" / "projects")],
@@ -349,7 +375,7 @@ def load_desktop_titles(desktop_dir=None):
         desktop_dir = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
     else:
         desktop_dir = Path(desktop_dir)
-    if not desktop_dir.exists():
+    if not check_dir(desktop_dir, "Desktop sessions"):
         return titles
     for json_file in desktop_dir.rglob("*.json"):
         if ".bak" in json_file.name:
@@ -379,7 +405,7 @@ def load_cowork_sessions(cowork_dir=None):
         cowork_dir = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
     else:
         cowork_dir = Path(cowork_dir)
-    if not cowork_dir.exists():
+    if not check_dir(cowork_dir, "Co-work sessions"):
         return titles, jsonl_files
 
     for json_file in cowork_dir.rglob("local_*.json"):
@@ -418,7 +444,14 @@ def load_codex_titles(codex_sessions_path=None):
         index_path = Path(codex_sessions_path).parent / "session_index.jsonl"
     else:
         index_path = Path.home() / ".codex" / "session_index.jsonl"
-    if not index_path.exists():
+    try:
+        index_path.stat()
+    except PermissionError:
+        print(f"WARNING: {index_path} exists but permission denied", file=sys.stderr)
+        return titles
+    except OSError:
+        return titles
+    if not index_path.is_file():
         return titles
     with open(index_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -671,7 +704,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
     """Find all JSONL session files from all configured sources."""
     found = []
     for claude_project in claude_project_dirs:
-        if not claude_project.exists():
+        if not check_dir(claude_project, f"Claude projects ({claude_project})"):
             continue
         jsonl_files = sorted(claude_project.glob("*.jsonl"))
         if jsonl_files:
@@ -701,7 +734,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                             for f in sorted(subagent_dir.glob("*.jsonl")):
                                 if _is_interactive_session(f):
                                     found.append(("claude", f))
-    if codex_sessions.exists():
+    if check_dir(codex_sessions, "Codex sessions"):
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
             found.append(("codex", f))
     for f in sorted(cowork_jsonl_files or []):
