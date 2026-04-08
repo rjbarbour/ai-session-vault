@@ -511,12 +511,20 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     if not project:
         project = jsonl_path.parent.name
 
-    # Extract account from project path (e.g. /Users/rob_dev/... -> rob_dev)
+    # Extract account from project path or JSONL file path
     account = ""
     if project.startswith("/Users/"):
         parts = project.split("/")
         if len(parts) >= 3:
             account = parts[2]
+    if not account:
+        # Fall back to JSONL file path (e.g. /Users/rob_dev/Library/.../<session>.jsonl)
+        jsonl_str = str(jsonl_path)
+        if "/Users/" in jsonl_str:
+            parts = jsonl_str.split("/")
+            users_idx = parts.index("Users")
+            if users_idx + 1 < len(parts):
+                account = parts[users_idx + 1]
 
     # Refine source tag based on entrypoint, Desktop/Co-work metadata
     if source_tag == "cowork":
