@@ -29,47 +29,39 @@ from export_sessions_to_obsidian import _is_interactive_session, load_config
 # ---------------------------------------------------------------------------
 
 def scan_project_roots(home):
-    """Find all project root directories and their children.
+    """Find all project directories for an account.
 
-    Strategy:
-    1. Check standard locations (DocsLocal, projects, Documents/Projects, Documents/GitHub)
-    2. Check for iCloud TMD subfolder and its subdirs
-    3. Discover additional roots from session cwds in ~/.claude/projects/
-    4. Collect project subdirectories from each root
+    Two-direction discovery:
+    1. Search for .claude directories under home — any dir with .claude is a project
+    2. Extract cwds from session JSONL — every cwd is a project directory
 
-    Skips ~/Documents itself as a root (too noisy — contains app data).
+    The parent of each discovered project becomes a "root" for grouping
+    in the report. No hardcoded root paths.
     """
-    docs = os.path.join(home, "Documents")
+    project_paths = set()  # full paths of project directories
 
-    # Standard root candidates (NOT ~/Documents itself — too broad)
-    root_candidates = [
-        ("~/DocsLocal", os.path.join(home, "DocsLocal")),
-        ("~/projects", os.path.join(home, "projects")),
-        ("~/Documents/Projects", os.path.join(docs, "Projects")),
-        ("~/Documents/GitHub", os.path.join(docs, "GitHub")),
-    ]
-
-    # Check for iCloud TMD subfolder — enumerate ALL its subdirs as roots
-    if os.path.isdir(docs):
+    # Direction 1: Find all .claude directories (fast filesystem search)
+    # Search common locations up to reasonable depth
+    search_roots = [home]
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
         try:
-            for item in os.listdir(docs):
-                if "TMD" in item or "MacBook" in item:
-                    tmd = os.path.join(docs, item)
-                    if os.path.isdir(tmd):
-                        try:
-                            for sub in sorted(os.listdir(tmd)):
-                                sub_path = os.path.join(tmd, sub)
-                                if os.path.isdir(sub_path) and not sub.startswith("."):
-                                    root_candidates.append(
-                                        (f"~/Documents/TMD/{sub}", sub_path))
-                        except PermissionError:
-                            pass
-                        break
+            for dirpath, dirnames, filenames in os.walk(root):
+                # Skip hidden dirs, node_modules, .git internals
+                dirnames[:] = [d for d in dirnames
+                               if not d.startswith(".") and d not in
+                               ("node_modules", "__pycache__", "venv", ".venv")]
+                if ".claude" in os.listdir(dirpath) and dirpath != home:
+                    project_paths.add(dirpath)
+                # Don't descend too deep
+                depth = dirpath.replace(root, "").count(os.sep)
+                if depth >= 4:
+                    dirnames.clear()
         except PermissionError:
             pass
 
-    # Discover roots from session cwds
-    cwd_roots = set()
+    # Direction 2: Extract cwds from session JSONL
     projects_root = os.path.join(home, ".claude", "projects")
     if os.path.isdir(projects_root):
         try:
@@ -87,11 +79,8 @@ def scan_project_roots(home):
                                 try:
                                     data = json.loads(line)
                                     cwd = data.get("cwd", "")
-                                    if cwd and cwd.startswith(home):
-                                        parent = os.path.dirname(cwd)
-                                        existing_paths = {p for _, p in root_candidates}
-                                        if parent != home and parent not in existing_paths:
-                                            cwd_roots.add(parent)
+                                    if cwd and os.path.isabs(cwd):
+                                        project_paths.add(cwd)
                                     break
                                 except (json.JSONDecodeError, KeyError):
                                     pass
@@ -100,41 +89,16 @@ def scan_project_roots(home):
         except PermissionError:
             pass
 
-    for cwd_root in sorted(cwd_roots):
-        label = cwd_root.replace(home, "~")
-        root_candidates.append((label, cwd_root))
-
-    # Collect projects from each root
-    seen_roots = set()
-    root_paths = {p for _, p in root_candidates}
-    skip_names = {"obsidian_shared_vault_session_index", ".DS_Store"}
+    # Build (root_label, name, full_path) tuples grouped by parent directory
+    skip_names = {"obsidian_shared_vault_session_index"}
     projects = []
-
-    for label, path in root_candidates:
-        if path in seen_roots or not os.path.isdir(path):
-            continue
-        seen_roots.add(path)
-        try:
-            for item in sorted(os.listdir(path)):
-                if item.startswith(".") or item in skip_names:
-                    continue
-                full = os.path.join(path, item)
-                if os.path.isdir(full) and full not in root_paths:
-                    projects.append((label, item, full))
-        except PermissionError:
-            pass
-
-    # Also add roots themselves as projects if they have .claude
-    # (handles cases like ~/Documents/Projects/claude being both a root and a project)
-    for label, path in root_candidates:
-        if not os.path.isdir(path):
-            continue
-        parent_label = os.path.dirname(path).replace(home, "~")
+    for path in sorted(project_paths):
         name = os.path.basename(path)
-        if os.path.isdir(os.path.join(path, ".claude")):
-            already_listed = any(full == path for _, _, full in projects)
-            if not already_listed:
-                projects.append((parent_label, name, path))
+        if name in skip_names:
+            continue
+        parent = os.path.dirname(path)
+        label = parent.replace(home, "~")
+        projects.append((label, name, path))
 
     return projects
 
