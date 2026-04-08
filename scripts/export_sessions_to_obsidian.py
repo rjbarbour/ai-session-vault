@@ -680,28 +680,58 @@ MIN_USER_MESSAGES = 2
 def _is_interactive_session(jsonl_path):
     """Check if a JSONL file is a real interactive session, not a claude -p call.
 
-    Filters out non-interactive sessions that match BOTH:
-    - Fewer than MIN_USER_MESSAGES user turns
-    - Contains a queue-operation/enqueue record (signature of claude -p)
+    Filters out non-interactive sessions that match EITHER:
+    - Both: fewer than MIN_USER_MESSAGES user turns AND queue-operation/enqueue record
+    - Content signature: first user message starts with known enrichment prompts
     """
     user_count = 0
     has_enqueue = False
+    first_user_content = ""
     with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             if '"type": "user"' in line or '"type":"user"' in line:
                 user_count += 1
+                if user_count == 1 and not first_user_content:
+                    try:
+                        data = json.loads(line)
+                        msg = data.get("message", {})
+                        if isinstance(msg, dict):
+                            content = msg.get("content", "")
+                            if isinstance(content, str):
+                                first_user_content = content[:100]
+                            elif isinstance(content, list):
+                                for block in content:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        first_user_content = block.get("text", "")[:100]
+                                        break
+                    except (json.JSONDecodeError, KeyError):
+                        pass
                 if user_count >= MIN_USER_MESSAGES:
-                    return True
+                    break
             if '"queue-operation"' in line and '"enqueue"' in line:
                 has_enqueue = True
-    # Only filter out if BOTH conditions are true
+
+    # Filter: queue-operation enqueue with few user messages
     if user_count < MIN_USER_MESSAGES and has_enqueue:
         return False
+
+    # Filter: content matches known enrichment/generation prompts
+    enrichment_signatures = [
+        "Enrich this session:",
+        "Generate a title for this session",
+        "Generate a short",
+    ]
+    for sig in enrichment_signatures:
+        if first_user_content.startswith(sig):
+            return False
+
     return True
 
 
-def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=None):
+def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=None,
+                       exclude_projects=None):
     """Find all JSONL session files from all configured sources."""
+    exclude_set = set(exclude_projects or [])
     found = []
     for claude_project in claude_project_dirs:
         if not check_dir(claude_project, f"Claude projects ({claude_project})"):
@@ -717,6 +747,11 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
             for project_dir in sorted(claude_project.iterdir()):
                 if not project_dir.is_dir():
                     continue
+                # Skip excluded projects by encoded dir name
+                if exclude_set:
+                    dir_name = project_dir.name.lower()
+                    if any(exc.lower() in dir_name for exc in exclude_set):
+                        continue
                 top_jsonl = sorted(project_dir.glob("*.jsonl"))
                 if top_jsonl:
                     # Has top-level JSONL — export those
@@ -791,8 +826,10 @@ def main():  # pragma: no cover
     cowork_titles, cowork_jsonl = load_cowork_sessions(str(cowork_dir))
     codex_titles = load_codex_titles(str(codex_sessions))
 
+    exclude_projects = cfg.get("exclude_projects", [])
     session_files = find_session_files(claude_project_dirs, codex_sessions,
-                                       cowork_jsonl_files=cowork_jsonl)
+                                       cowork_jsonl_files=cowork_jsonl,
+                                       exclude_projects=exclude_projects)
     if not session_files:
         print("No session files found.", file=sys.stderr)
         sys.exit(1)
