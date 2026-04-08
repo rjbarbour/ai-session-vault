@@ -63,16 +63,22 @@ log "=== ACL $ACTION started for accounts: $ACCOUNTS ==="
 log "ACL user: $ACL_USER"
 log ""
 
-# Ensure home directories are traversable.
+# Ensure home directories and intermediate paths are traversable.
+# Without traverse on ~/Library and ~/Library/Application Support,
+# the ACL on ~/Library/Application Support/Claude can't be reached.
 for account in $ACCOUNTS; do
-    home="/Users/$account"
-    if [[ -d "$home" ]]; then
-        if chmod +a "$ACL_USER allow execute,readattr,search" "$home" 2>/dev/null; then
-            log "  TRAVERSE OK: $home"
-        else
-            log "  TRAVERSE FAILED: $home"
+    for dir in \
+        "/Users/$account" \
+        "/Users/$account/Library" \
+        "/Users/$account/Library/Application Support"; do
+        if [[ -d "$dir" ]]; then
+            if chmod +a "$ACL_USER allow execute,readattr,search" "$dir" 2>/dev/null; then
+                log "  TRAVERSE OK: $dir"
+            else
+                log "  TRAVERSE FAILED: $dir"
+            fi
         fi
-    fi
+    done
 done
 log ""
 
