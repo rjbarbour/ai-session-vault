@@ -89,7 +89,7 @@ def scan_project_roots(home, extra_roots=None):
                                 try:
                                     data = json.loads(line)
                                     cwd = data.get("cwd", "")
-                                    if cwd and os.path.isabs(cwd):
+                                    if cwd and os.path.isabs(cwd) and cwd != home:
                                         project_paths.add(cwd)
                                     break
                                 except (json.JSONDecodeError, KeyError):
