@@ -10,25 +10,31 @@ AI coding tools store conversation history in opaque formats (JSONL, SQLite) sca
 
 Export all sessions to a single Obsidian vault as Markdown with YAML frontmatter. Search once across everything — by keyword or semantically — then go to the original session, pull context into a current conversation, or share it.
 
+## Requirements
+
+- **Python 3.8+** with pytest (`pip install pytest`)
+- **Claude Code CLI** (optional, for AI-generated titles and summaries) — install and run `claude /login`
+- **Obsidian** (optional, for browsing) — any text editor works for search
+
 ## Quick Start
 
 ```bash
 # 1. Clone
-git clone https://github.com/youruser/ai-session-vault.git
+git clone https://github.com/rjbarbour/ai-session-vault.git
 cd ai-session-vault
 
-# 2. Configure
-cp config.example.json config.json
-# Edit config.json with your vault path and session sources
+# 2. Run setup (checks prerequisites, creates config and vault)
+python3 scripts/setup.py
 
-# 3. Create the vault directory
-mkdir -p ~/obsidian-session-vault
+# 3. Export everything
+python3 scripts/export_all.py
 
-# 4. Export
-python3 scripts/export_sessions_to_obsidian.py
-
-# 5. Open the vault directory in Obsidian
+# 4. Open the vault directory in Obsidian
 ```
+
+The setup script checks Python, Claude CLI, vault directory, session sources, and cross-account permissions. It creates `config.json` from the example if needed.
+
+`export_all.py` runs the full pipeline: export → enrich → dedupe → audit. Use `--skip-enrich` if Claude CLI is not available.
 
 ## Configuration
 

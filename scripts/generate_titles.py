@@ -107,10 +107,35 @@ def truncate_for_enrichment(body):
     return "\n".join(kept)
 
 
+def check_claude_available():
+    """Verify Claude CLI is installed and can respond. Returns (ok, reason)."""
+    import shutil
+    if not shutil.which("claude"):
+        return False, "claude CLI not found in PATH"
+    try:
+        result = subprocess.run(
+            ["claude", "--model", "haiku", "-p",
+             "--system-prompt", "Reply with just OK", "test"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "login" in stderr.lower() or "auth" in stderr.lower():
+                return False, "claude CLI not authenticated — run: claude /login"
+            return False, f"claude CLI error: {stderr[:100]}"
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, "claude CLI timed out"
+    except FileNotFoundError:
+        return False, "claude CLI not found"
+
+
 def enrich_session(md_content):
     """Call Claude CLI with session markdown to generate metadata.
 
     Truncates oversized sessions to fit Haiku's context window.
+    Uses --system-prompt to avoid CLAUDE.md contamination from the
+    current working directory.
     """
     if len(md_content) > MAX_ENRICHMENT_CHARS:
         parts = md_content.split("---", 2)
@@ -123,7 +148,7 @@ def enrich_session(md_content):
         result = subprocess.run(
             ["claude", "--model", "haiku", "-p",
              "--system-prompt", ENRICHMENT_SYSTEM_PROMPT, prompt],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=90,
         )
         if result.returncode != 0:
             return None
@@ -134,8 +159,10 @@ def enrich_session(md_content):
         data = json.loads(output)
         if "title" in data and "summary_short" in data:
             return data
-    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-        pass
+    except subprocess.TimeoutExpired:
+        return None
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
     return None
 
 
@@ -298,6 +325,15 @@ def main():
     args = parser.parse_args()
 
     vault = args.vault or Path(cfg["vault_path"])
+
+    # Pre-flight: verify Claude CLI before processing anything
+    if not args.dry_run:
+        ok, reason = check_claude_available()
+        if not ok:
+            print(f"Error: {reason}", file=sys.stderr)
+            print("Enrichment requires Claude CLI. Run: python3 scripts/setup.py",
+                  file=sys.stderr)
+            sys.exit(1)
 
     candidates = []
     for md_file in sorted(vault.glob("*.md")):
