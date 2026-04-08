@@ -12,9 +12,11 @@ Requires the `claude` CLI to be installed and authenticated.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -191,37 +193,87 @@ def update_file(md_path, enrichment, dry_run=False):
     ))]
     text = "\n".join(lines)
 
-    # Update title and title_source
-    text = text.replace(f'title: "{old_title}"', f'title: "{new_title_yaml}"')
-    if replace and title_source != "generated":
-        text = text.replace(f"title_source: {title_source}", "title_source: generated")
+    # Rebuild frontmatter line by line (safer than string.replace)
+    lines = text.split("\n")
+    new_lines = []
+    in_frontmatter = False
+    frontmatter_done = False
+    tags_found = False
 
-    # Insert enrichment fields after tags line
-    tags_line = next(l for l in text.split("\n") if l.startswith("tags:"))
-    insertion = ""
-    insertion += f"\noriginal_title: \"{old_title_yaml}\""
-    insertion += f"\nhaiku_title: \"{haiku_title_yaml}\""
-    if summary_short:
-        insertion += f"\nsummary_short: \"{summary_short_escaped}\""
-    if summary_long:
-        insertion += f"\nsummary_long: \"{summary_long_escaped}\""
-    if keywords:
-        insertion += f"\nkeywords: \"{keywords_escaped}\""
-    text = text.replace(tags_line, tags_line + insertion, 1)
+    for line in lines:
+        if line.strip() == "---" and not in_frontmatter:
+            in_frontmatter = True
+            new_lines.append(line)
+            continue
+        if line.strip() == "---" and in_frontmatter:
+            # Insert enrichment fields before closing ---
+            if not tags_found:
+                new_lines.append(f"tags: [session]")
+            new_lines.append(f"original_title: \"{old_title_yaml}\"")
+            new_lines.append(f"haiku_title: \"{haiku_title_yaml}\"")
+            if summary_short:
+                new_lines.append(f"summary_short: \"{summary_short_escaped}\"")
+            if summary_long:
+                new_lines.append(f"summary_long: \"{summary_long_escaped}\"")
+            if keywords:
+                new_lines.append(f"keywords: \"{keywords_escaped}\"")
+            new_lines.append(line)
+            in_frontmatter = False
+            frontmatter_done = True
+            continue
 
-    # Update the markdown heading if title changed
+        if in_frontmatter:
+            key = line.split(":")[0].strip() if ":" in line else ""
+            # Skip old enrichment fields (will be re-added above)
+            if key in ("summary_short", "summary_long", "keywords",
+                       "original_title", "haiku_title"):
+                continue
+            # Update title
+            if key == "title":
+                new_lines.append(f"title: \"{new_title_yaml}\"")
+                continue
+            # Update title_source
+            if key == "title_source":
+                new_source = "generated" if replace else title_source
+                new_lines.append(f"title_source: {new_source}")
+                continue
+            if key == "tags":
+                tags_found = True
+            new_lines.append(line)
+        elif frontmatter_done and line.startswith("# ") and not line.startswith("## "):
+            # Update the markdown heading
+            new_lines.append(f"# {new_title}")
+            frontmatter_done = False  # Only replace first heading
+        else:
+            new_lines.append(line)
+
+    updated_text = "\n".join(new_lines)
+
+    # Compute new filename
     if replace:
         old_slug = slugify(old_title)
         new_slug = slugify(new_title)
-        text = text.replace(f"# {old_title}", f"# {new_title}", 1)
         new_name = md_path.name.replace(old_slug, new_slug)
     else:
         new_name = md_path.name
-
     new_path = md_path.parent / new_name
-    md_path.write_text(text, encoding="utf-8")
-    if new_name != md_path.name:
-        md_path.rename(new_path)
+
+    # Atomic write: write to temp file then rename
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(md_path.parent), suffix=".md.tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
+            tmp_f.write(updated_text)
+        # Replace the original (or new name) atomically
+        Path(tmp_path).rename(new_path)
+        # Remove old file if renamed
+        if new_name != md_path.name and md_path.exists():
+            md_path.unlink()
+    except Exception:
+        # Clean up temp file on failure
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
 
     action = "REPLACED" if replace else "KEPT"
     print(f"  {action}: {new_name}", flush=True)

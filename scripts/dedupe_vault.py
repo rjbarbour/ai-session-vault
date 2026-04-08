@@ -123,6 +123,11 @@ def main():
     print(f"Found {len(duplicates)} session(s) with duplicates ({total_files} files, {to_remove} to remove)")
     print()
 
+    # Move deleted files to .deleted/ for recovery, not permanent deletion
+    deleted_dir = vault / ".deleted"
+    if not args.dry_run:
+        deleted_dir.mkdir(exist_ok=True)
+
     removed = 0
     for sid, entries in sorted(duplicates.items()):
         keeper = entries[0]
@@ -134,14 +139,15 @@ def main():
         for r in removes:
             print(f"    REMOVE: {r['path'].name} (score={r['score']})")
             if not args.dry_run:
-                r["path"].unlink()
+                dest = deleted_dir / r["path"].name
+                r["path"].rename(dest)
                 removed += 1
         print()
 
     if args.dry_run:
         print(f"Dry run: would remove {to_remove} files")
     else:
-        print(f"Removed {removed} duplicate files")
+        print(f"Moved {removed} duplicate files to {deleted_dir}")
 
 
 if __name__ == "__main__":
