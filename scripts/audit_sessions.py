@@ -4,10 +4,13 @@ Scans project directories, Claude Code JSONL, Desktop metadata, Codex
 sessions, Co-work sessions, and the vault to produce a comprehensive
 markdown audit report.
 
-Usage:
-    python3 scripts/audit_sessions.py [--account ACCOUNT] [--output PATH]
+Works for any macOS account — auto-discovers project roots, handles
+iCloud path moves, and filters vault entries by account.
 
-Defaults to the current user. Output defaults to stdout.
+Usage:
+    python3 scripts/audit_sessions.py                      # current user
+    python3 scripts/audit_sessions.py --account robert     # other account
+    python3 scripts/audit_sessions.py --account robert --output audit_robert.md
 """
 import argparse
 import json
@@ -21,77 +24,89 @@ sys.path.insert(0, str(Path(__file__).parent))
 from export_sessions_to_obsidian import _is_interactive_session, load_config
 
 
+# ---------------------------------------------------------------------------
+# Project root discovery
+# ---------------------------------------------------------------------------
+
 def scan_project_roots(home):
     """Find all project root directories and their children.
 
-    Auto-discovers roots by scanning for common project locations and
-    iCloud TMD subfolders. Works for any account's home directory.
+    Strategy:
+    1. Check standard locations (DocsLocal, projects, Documents/Projects, Documents/GitHub)
+    2. Check for iCloud TMD subfolder and its subdirs
+    3. Discover additional roots from session cwds in ~/.claude/projects/
+    4. Collect project subdirectories from each root
+
+    Skips ~/Documents itself as a root (too noisy — contains app data).
     """
-    account = os.path.basename(home)
     docs = os.path.join(home, "Documents")
 
-    # Standard root candidates
+    # Standard root candidates (NOT ~/Documents itself — too broad)
     root_candidates = [
         ("~/DocsLocal", os.path.join(home, "DocsLocal")),
         ("~/projects", os.path.join(home, "projects")),
-        ("~/Documents", docs),
         ("~/Documents/Projects", os.path.join(docs, "Projects")),
         ("~/Documents/GitHub", os.path.join(docs, "GitHub")),
     ]
 
-    # Check for iCloud TMD subfolder
+    # Check for iCloud TMD subfolder — enumerate ALL its subdirs as roots
     if os.path.isdir(docs):
         try:
             for item in os.listdir(docs):
                 if "TMD" in item or "MacBook" in item:
                     tmd = os.path.join(docs, item)
                     if os.path.isdir(tmd):
-                        root_candidates.append(("~/Documents/TMD", tmd))
-                        for sub in ("GitHub", "Projects"):
-                            sub_path = os.path.join(tmd, sub)
-                            if os.path.isdir(sub_path):
-                                root_candidates.append(
-                                    (f"~/Documents/TMD/{sub}", sub_path))
+                        try:
+                            for sub in sorted(os.listdir(tmd)):
+                                sub_path = os.path.join(tmd, sub)
+                                if os.path.isdir(sub_path) and not sub.startswith("."):
+                                    root_candidates.append(
+                                        (f"~/Documents/TMD/{sub}", sub_path))
+                        except PermissionError:
+                            pass
                         break
         except PermissionError:
             pass
 
-    # Also add roots discovered from session cwds (in case projects are
-    # in unusual locations)
+    # Discover roots from session cwds
     cwd_roots = set()
     projects_root = os.path.join(home, ".claude", "projects")
     if os.path.isdir(projects_root):
-        for proj in os.listdir(projects_root):
-            proj_path = os.path.join(projects_root, proj)
-            if not os.path.isdir(proj_path):
-                continue
-            for f in os.listdir(proj_path):
-                if not f.endswith(".jsonl"):
+        try:
+            for proj in os.listdir(projects_root):
+                proj_path = os.path.join(projects_root, proj)
+                if not os.path.isdir(proj_path):
                     continue
-                full = os.path.join(proj_path, f)
-                try:
-                    with open(full, errors="replace") as fh:
-                        for line in fh:
-                            try:
-                                data = json.loads(line)
-                                cwd = data.get("cwd", "")
-                                if cwd and cwd.startswith(home):
-                                    # Extract the parent of the project dir
-                                    parent = os.path.dirname(cwd)
-                                    if parent != home and parent not in [p for _, p in root_candidates]:
-                                        cwd_roots.add(parent)
-                                break
-                            except (json.JSONDecodeError, KeyError):
-                                pass
-                except (OSError, PermissionError):
-                    pass
+                for f in os.listdir(proj_path):
+                    if not f.endswith(".jsonl"):
+                        continue
+                    full = os.path.join(proj_path, f)
+                    try:
+                        with open(full, errors="replace") as fh:
+                            for line in fh:
+                                try:
+                                    data = json.loads(line)
+                                    cwd = data.get("cwd", "")
+                                    if cwd and cwd.startswith(home):
+                                        parent = os.path.dirname(cwd)
+                                        existing_paths = {p for _, p in root_candidates}
+                                        if parent != home and parent not in existing_paths:
+                                            cwd_roots.add(parent)
+                                    break
+                                except (json.JSONDecodeError, KeyError):
+                                    pass
+                    except (OSError, PermissionError):
+                        pass
+        except PermissionError:
+            pass
 
     for cwd_root in sorted(cwd_roots):
         label = cwd_root.replace(home, "~")
         root_candidates.append((label, cwd_root))
 
-    # Deduplicate and collect projects from each root
+    # Collect projects from each root
     seen_roots = set()
+    root_paths = {p for _, p in root_candidates}
     skip_names = {"obsidian_shared_vault_session_index", ".DS_Store"}
     projects = []
 
@@ -104,18 +119,32 @@ def scan_project_roots(home):
                 if item.startswith(".") or item in skip_names:
                     continue
                 full = os.path.join(path, item)
-                if os.path.isdir(full):
-                    # Skip if this dir is already a root we'll scan
-                    if full not in [p for _, p in root_candidates]:
-                        projects.append((label, item, full))
+                if os.path.isdir(full) and full not in root_paths:
+                    projects.append((label, item, full))
         except PermissionError:
             pass
+
+    # Also add roots themselves as projects if they have .claude
+    # (handles cases like ~/Documents/Projects/claude being both a root and a project)
+    for label, path in root_candidates:
+        if not os.path.isdir(path):
+            continue
+        parent_label = os.path.dirname(path).replace(home, "~")
+        name = os.path.basename(path)
+        if os.path.isdir(os.path.join(path, ".claude")):
+            already_listed = any(full == path for _, _, full in projects)
+            if not already_listed:
+                projects.append((parent_label, name, path))
 
     return projects
 
 
+# ---------------------------------------------------------------------------
+# Session scanners
+# ---------------------------------------------------------------------------
+
 def scan_cli_sessions(home):
-    """Count interactive CLI sessions by cwd."""
+    """Count interactive CLI sessions by cwd, including subagent files."""
     projects_root = os.path.join(home, ".claude", "projects")
     cwd_counts = defaultdict(int)
     if not os.path.isdir(projects_root):
@@ -125,9 +154,9 @@ def scan_cli_sessions(home):
         proj_path = os.path.join(projects_root, proj_dir)
         if not os.path.isdir(proj_path):
             continue
-        for f in os.listdir(proj_path):
-            if not f.endswith(".jsonl"):
-                continue
+        # Top-level JSONL
+        top_jsonl = [f for f in os.listdir(proj_path) if f.endswith(".jsonl")]
+        for f in top_jsonl:
             full = os.path.join(proj_path, f)
             if not _is_interactive_session(Path(full)):
                 continue
@@ -141,16 +170,41 @@ def scan_cli_sessions(home):
                             break
                     except (json.JSONDecodeError, KeyError):
                         pass
+
+        # Subagent files (for Desktop-only sessions with no top-level JSONL)
+        if not top_jsonl:
+            for session_dir in os.listdir(proj_path):
+                sd_path = os.path.join(proj_path, session_dir)
+                if not os.path.isdir(sd_path) or session_dir == "memory":
+                    continue
+                subagent_dir = os.path.join(sd_path, "subagents")
+                if os.path.isdir(subagent_dir):
+                    for f in os.listdir(subagent_dir):
+                        if not f.endswith(".jsonl"):
+                            continue
+                        full = os.path.join(subagent_dir, f)
+                        if _is_interactive_session(Path(full)):
+                            with open(full, errors="replace") as fh:
+                                for line in fh:
+                                    try:
+                                        data = json.loads(line)
+                                        cwd = data.get("cwd", "")
+                                        if cwd:
+                                            cwd_counts[cwd] += 1
+                                            break
+                                    except (json.JSONDecodeError, KeyError):
+                                        pass
+
     return cwd_counts
 
 
 def scan_desktop_sessions(home):
-    """Count Desktop sessions by cwd. Also track sessions with missing parent JSONL."""
+    """Count Desktop sessions by cwd. Track sessions with missing parent JSONL."""
     desktop_dir = os.path.join(
         home, "Library", "Application Support", "Claude", "claude-code-sessions"
     )
     cwd_counts = defaultdict(int)
-    missing_parent = []  # (title, cwd, cliSessionId) for sessions with no parent JSONL
+    missing_parent = []
     if not os.path.isdir(desktop_dir):
         return cwd_counts, missing_parent
 
@@ -168,7 +222,6 @@ def scan_desktop_sessions(home):
                 title = data.get("title", "")
                 if cwd:
                     cwd_counts[cwd] += 1
-                # Check if parent JSONL exists
                 if cli_id and os.path.isdir(projects_root):
                     has_jsonl = False
                     for proj in os.listdir(projects_root):
@@ -213,14 +266,13 @@ def scan_cowork_sessions(home):
     cowork_dir = os.path.join(
         home, "Library", "Application Support", "Claude", "local-agent-mode-sessions"
     )
-    metadata_cwds = defaultdict(int)  # cwd -> count of metadata sessions
+    metadata_cwds = defaultdict(int)
     jsonl_count = 0
     if not os.path.isdir(cowork_dir):
         return metadata_cwds, jsonl_count
 
     for root, dirs, files in os.walk(cowork_dir):
         for f in files:
-            # Metadata JSON
             if f.startswith("local_") and f.endswith(".json") and ".bak" not in f:
                 try:
                     with open(os.path.join(root, f)) as fh:
@@ -230,7 +282,6 @@ def scan_cowork_sessions(home):
                         metadata_cwds[cwd] += 1
                 except (json.JSONDecodeError, OSError):
                     pass
-            # JSONL (conversation files, not audit)
             elif f.endswith(".jsonl") and f != "audit.jsonl":
                 full = os.path.join(root, f)
                 if _is_interactive_session(Path(full)):
@@ -239,8 +290,12 @@ def scan_cowork_sessions(home):
     return metadata_cwds, jsonl_count
 
 
+# ---------------------------------------------------------------------------
+# Vault scanning
+# ---------------------------------------------------------------------------
+
 def scan_vault(vault_path, account_filter=None):
-    """Count vault entries by project and source, reading only frontmatter.
+    """Count vault entries by project and source.
 
     If account_filter is set, only count entries matching that account.
     """
@@ -254,9 +309,7 @@ def scan_vault(vault_path, account_filter=None):
         if not f.endswith(".md"):
             continue
         full = os.path.join(vault_path, f)
-        project = ""
-        source = ""
-        account = ""
+        project = source = account = ""
         with open(full) as fh:
             first_line = fh.readline()
             if first_line.strip() != "---":
@@ -283,39 +336,51 @@ def scan_vault(vault_path, account_filter=None):
     return by_project, by_source, total
 
 
+# ---------------------------------------------------------------------------
+# Path aliases and matching
+# ---------------------------------------------------------------------------
+
 def build_path_aliases(home):
     """Build a mapping of iCloud-moved paths to their TMD equivalents.
 
-    When iCloud Optimize Storage moved ~/Documents/ contents into the
-    'Documents - TMD's MacBook Pro' subfolder, session cwds still reference
-    the old paths. This builds aliases so the audit can match them.
+    Enumerates ALL subdirectories inside the TMD folder, not just
+    Projects and GitHub.
     """
     docs = os.path.join(home, "Documents")
-    aliases = {}  # old_path -> tmd_path
+    aliases = {}
 
     tmd_name = None
     if os.path.isdir(docs):
-        for item in os.listdir(docs):
-            if "TMD" in item or "MacBook" in item:
-                full = os.path.join(docs, item)
-                if os.path.isdir(full):
-                    tmd_name = item
-                    break
+        try:
+            for item in os.listdir(docs):
+                if "TMD" in item or "MacBook" in item:
+                    full = os.path.join(docs, item)
+                    if os.path.isdir(full):
+                        tmd_name = item
+                        break
+        except PermissionError:
+            pass
 
     if not tmd_name:
         return aliases
 
     tmd = os.path.join(docs, tmd_name)
-    # Map ~/Documents/Projects/X -> ~/Documents/TMD/Projects/X
-    # Map ~/Documents/GitHub/X -> ~/Documents/TMD/GitHub/X
-    for subdir in ("Projects", "GitHub"):
-        old_root = os.path.join(docs, subdir)
-        new_root = os.path.join(tmd, subdir)
-        if os.path.isdir(new_root):
-            for item in os.listdir(new_root):
-                old_path = os.path.join(old_root, item)
-                new_path = os.path.join(new_root, item)
-                aliases[old_path] = new_path
+    try:
+        for subdir in os.listdir(tmd):
+            sub_path = os.path.join(tmd, subdir)
+            if not os.path.isdir(sub_path) or subdir.startswith("."):
+                continue
+            old_root = os.path.join(docs, subdir)
+            # Map items inside: ~/Documents/<subdir>/X -> ~/Documents/TMD/<subdir>/X
+            try:
+                for item in os.listdir(sub_path):
+                    old_path = os.path.join(old_root, item)
+                    new_path = os.path.join(sub_path, item)
+                    aliases[old_path] = new_path
+            except PermissionError:
+                pass
+    except PermissionError:
+        pass
 
     return aliases
 
@@ -328,7 +393,6 @@ def match_count(cwd_counts, project_path, aliases=None):
         if cwd.startswith(prefix):
             count += n
 
-    # Check aliases: if a session cwd is an old path that maps to this project
     if aliases:
         for old_path, new_path in aliases.items():
             if new_path == project_path or new_path.startswith(project_path + "/"):
@@ -342,10 +406,16 @@ def match_count(cwd_counts, project_path, aliases=None):
 
 
 def find_orphan_cwds(all_cwds, known_paths):
-    """Find session cwds that don't match any known project directory."""
+    """Find session cwds that don't match any known project directory.
+
+    Excludes Co-work /sessions/* paths (expected to be orphans).
+    """
     orphans = defaultdict(int)
     known_set = set(known_paths)
     for cwd, count in all_cwds.items():
+        # Co-work sessions use /sessions/<name> — not real project paths
+        if cwd.startswith("/sessions/"):
+            continue
         matched = False
         for known in known_set:
             if cwd == known or cwd.startswith(known + "/"):
@@ -355,6 +425,10 @@ def find_orphan_cwds(all_cwds, known_paths):
             orphans[cwd] += count
     return orphans
 
+
+# ---------------------------------------------------------------------------
+# Report generation
+# ---------------------------------------------------------------------------
 
 def generate_report(home, vault_path, account):
     """Generate the full audit report as markdown."""
@@ -377,12 +451,7 @@ def generate_report(home, vault_path, account):
     lines.append("| Root | Project | .claude | CLI | Desktop | Codex | Co-work | Total | In Vault | Found | All In |")
     lines.append("|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
 
-    skip_names = {"obsidian_shared_vault_session_index"}
-
     for label, name, full in projects:
-        if name in skip_names:
-            continue
-
         has_claude = os.path.isdir(os.path.join(full, ".claude"))
         n_cli = match_count(cli, full, aliases)
         n_desk = match_count(desktop, full, aliases)
@@ -392,13 +461,11 @@ def generate_report(home, vault_path, account):
 
         n_vault = match_count(vault_projects, full, aliases)
 
-        # Check if any Desktop sessions for this project have missing parent JSONL
         has_lost_parent = False
         for title, cwd, cli_id in desktop_missing_parent:
             if cwd == full or cwd.startswith(full + "/"):
                 has_lost_parent = True
                 break
-            # Check aliases
             if aliases:
                 for old_path, new_path in aliases.items():
                     if (new_path == full or new_path.startswith(full + "/")) and \
@@ -421,9 +488,11 @@ def generate_report(home, vault_path, account):
 
     # Co-work summary row
     cowork_in_vault = vault_sources.get("claude-cowork", 0)
-    lines.append(f"| Co-work | {len(cowork_cwds)} named sessions | | 0 | 0 | 0 | {cowork_jsonl_total} | {cowork_jsonl_total} | {cowork_in_vault} | ✅ | {'✅' if cowork_in_vault >= cowork_jsonl_total else '❌'} |")
+    if cowork_jsonl_total > 0 or len(cowork_cwds) > 0:
+        lines.append(f"| Co-work | {len(cowork_cwds)} named sessions | | 0 | 0 | 0 | {cowork_jsonl_total} | {cowork_jsonl_total} | {cowork_in_vault} | ✅ | {'✅' if cowork_in_vault >= cowork_jsonl_total else '❌'} |")
 
     # Summary
+    total_found = sum(cli.values()) + sum(desktop.values()) + sum(codex.values()) + cowork_jsonl_total
     lines.append("")
     lines.append("## Summary")
     lines.append("")
@@ -431,29 +500,29 @@ def generate_report(home, vault_path, account):
     lines.append(f"- **Desktop sessions:** {sum(desktop.values())}")
     lines.append(f"- **Codex sessions:** {sum(codex.values())}")
     lines.append(f"- **Co-work:** {len(cowork_cwds)} metadata sessions, {cowork_jsonl_total} JSONL files")
-    lines.append(f"- **Total found:** {sum(cli.values()) + sum(desktop.values()) + sum(codex.values()) + cowork_jsonl_total}")
+    lines.append(f"- **Total found:** {total_found}")
     lines.append(f"- **In vault:** {vault_total}")
-    lines.append("")
-    lines.append("Vault breakdown by source:")
-    for source, count in sorted(vault_sources.items()):
-        lines.append(f"- {source}: {count}")
+    if vault_sources:
+        lines.append("")
+        lines.append("Vault breakdown by source:")
+        for source, count in sorted(vault_sources.items()):
+            lines.append(f"- {source}: {count}")
 
-    # Gap analysis
+    # Gaps
     lines.append("")
     lines.append("## Gaps")
     lines.append("")
 
     gaps = []
     for label, name, full in projects:
-        if name in skip_names:
-            continue
-        n_total = match_count(cli, full, aliases) + match_count(desktop, full, aliases) + match_count(codex, full, aliases) + match_count(cowork_cwds, full, aliases)
+        n_total = match_count(cli, full, aliases) + match_count(desktop, full, aliases) + \
+                  match_count(codex, full, aliases) + match_count(cowork_cwds, full, aliases)
         n_vault = match_count(vault_projects, full, aliases)
         if n_total > 0 and n_vault < n_total:
             missing = n_total - n_vault
             gaps.append(f"- {label}/{name}: {missing} session(s) missing from vault")
 
-    if cowork_in_vault < cowork_jsonl_total:
+    if cowork_jsonl_total > 0 and cowork_in_vault < cowork_jsonl_total:
         gaps.append(f"- Co-work: {cowork_jsonl_total - cowork_in_vault} session(s) missing from vault")
 
     if gaps:
@@ -462,7 +531,7 @@ def generate_report(home, vault_path, account):
     else:
         lines.append("No gaps — all found sessions are in the vault.")
 
-    # Data losses — Desktop sessions with no parent JSONL
+    # Data losses
     if desktop_missing_parent:
         lines.append("")
         lines.append("## Data Losses (Desktop sessions with no parent JSONL)")
@@ -496,6 +565,10 @@ def generate_report(home, vault_path, account):
 
     return "\n".join(lines) + "\n"
 
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
     cfg = load_config()
