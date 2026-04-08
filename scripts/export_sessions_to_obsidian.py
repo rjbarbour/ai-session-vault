@@ -28,6 +28,32 @@ from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 
+
+def check_dir(path, label=""):
+    """Check if a directory exists and is readable.
+
+    Returns True if accessible, False if not found, and prints a warning
+    if the path exists but is not readable (permission denied).
+    """
+    p = Path(path)
+    try:
+        p.stat()
+    except PermissionError:
+        print(f"WARNING: {label or path} exists but permission denied — "
+              "re-run apply_cross_account_acls.sh with sudo", file=sys.stderr)
+        return False
+    except OSError:
+        return False
+    if not p.is_dir():
+        return False
+    try:
+        list(p.iterdir())
+    except PermissionError:
+        print(f"WARNING: {label or path} not readable — "
+              "re-run apply_cross_account_acls.sh with sudo", file=sys.stderr)
+        return False
+    return True
+
 GENERIC_DEFAULTS = {
     "vault_path": str(Path.home() / "obsidian-session-vault"),
     "claude_projects": [str(Path.home() / ".claude" / "projects")],
@@ -349,7 +375,7 @@ def load_desktop_titles(desktop_dir=None):
         desktop_dir = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
     else:
         desktop_dir = Path(desktop_dir)
-    if not desktop_dir.exists():
+    if not check_dir(desktop_dir, "Desktop sessions"):
         return titles
     for json_file in desktop_dir.rglob("*.json"):
         if ".bak" in json_file.name:
@@ -379,7 +405,7 @@ def load_cowork_sessions(cowork_dir=None):
         cowork_dir = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
     else:
         cowork_dir = Path(cowork_dir)
-    if not cowork_dir.exists():
+    if not check_dir(cowork_dir, "Co-work sessions"):
         return titles, jsonl_files
 
     for json_file in cowork_dir.rglob("local_*.json"):
@@ -418,7 +444,14 @@ def load_codex_titles(codex_sessions_path=None):
         index_path = Path(codex_sessions_path).parent / "session_index.jsonl"
     else:
         index_path = Path.home() / ".codex" / "session_index.jsonl"
-    if not index_path.exists():
+    try:
+        index_path.stat()
+    except PermissionError:
+        print(f"WARNING: {index_path} exists but permission denied", file=sys.stderr)
+        return titles
+    except OSError:
+        return titles
+    if not index_path.is_file():
         return titles
     with open(index_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -511,12 +544,20 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     if not project:
         project = jsonl_path.parent.name
 
-    # Extract account from project path (e.g. /Users/rob_dev/... -> rob_dev)
+    # Extract account from project path or JSONL file path
     account = ""
     if project.startswith("/Users/"):
         parts = project.split("/")
         if len(parts) >= 3:
             account = parts[2]
+    if not account:
+        # Fall back to JSONL file path (e.g. /Users/rob_dev/Library/.../<session>.jsonl)
+        jsonl_str = str(jsonl_path)
+        if "/Users/" in jsonl_str:
+            parts = jsonl_str.split("/")
+            users_idx = parts.index("Users")
+            if users_idx + 1 < len(parts):
+                account = parts[users_idx + 1]
 
     # Refine source tag based on entrypoint, Desktop/Co-work metadata
     if source_tag == "cowork":
@@ -663,7 +704,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
     """Find all JSONL session files from all configured sources."""
     found = []
     for claude_project in claude_project_dirs:
-        if not claude_project.exists():
+        if not check_dir(claude_project, f"Claude projects ({claude_project})"):
             continue
         jsonl_files = sorted(claude_project.glob("*.jsonl"))
         if jsonl_files:
@@ -693,7 +734,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                             for f in sorted(subagent_dir.glob("*.jsonl")):
                                 if _is_interactive_session(f):
                                     found.append(("claude", f))
-    if codex_sessions.exists():
+    if check_dir(codex_sessions, "Codex sessions"):
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
             found.append(("codex", f))
     for f in sorted(cowork_jsonl_files or []):
@@ -708,16 +749,33 @@ def main():  # pragma: no cover
         description="Export Claude Code and Codex sessions to Obsidian"
     )
     parser.add_argument("--vault", type=Path, default=None)
+    parser.add_argument("--account", default=None,
+                        help="macOS account to export (resolves all paths from /Users/<account>)")
     parser.add_argument("--claude-project", type=Path, default=None,
                         help="Single Claude project dir (overrides config.json)")
     parser.add_argument("--codex-sessions", type=Path, default=None)
     args = parser.parse_args()
 
+    # Resolve home directory for the target account
+    if args.account:
+        home = Path(f"/Users/{args.account}")
+    else:
+        home = Path.home()
+
     vault = args.vault or Path(cfg["vault_path"])
-    codex_sessions = args.codex_sessions or Path(cfg["codex_sessions"])
+
+    # Resolve all session paths relative to the target account
+    if args.codex_sessions:
+        codex_sessions = args.codex_sessions
+    elif args.account:
+        codex_sessions = home / ".codex" / "sessions"
+    else:
+        codex_sessions = Path(cfg["codex_sessions"])
 
     if args.claude_project:
         claude_project_dirs = [args.claude_project]
+    elif args.account:
+        claude_project_dirs = [home / ".claude" / "projects"]
     else:
         claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
 
@@ -725,8 +783,12 @@ def main():  # pragma: no cover
         print(f"Vault directory not found: {vault}", file=sys.stderr)
         sys.exit(1)
 
-    desktop_titles = load_desktop_titles()
-    cowork_titles, cowork_jsonl = load_cowork_sessions()
+    # Load title sources from the target account's paths
+    desktop_dir = home / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    cowork_dir = home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+
+    desktop_titles = load_desktop_titles(str(desktop_dir))
+    cowork_titles, cowork_jsonl = load_cowork_sessions(str(cowork_dir))
     codex_titles = load_codex_titles(str(codex_sessions))
 
     session_files = find_session_files(claude_project_dirs, codex_sessions,

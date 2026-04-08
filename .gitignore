@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .coverage
+acl_apply.log
 config.json
 AGENTS.md
 PLAN.md

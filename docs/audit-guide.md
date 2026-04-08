@@ -74,7 +74,7 @@ Sessions whose `cwd` doesn't match any scanned project root. Common causes:
 - Pre-iCloud paths (`~/Documents/Projects/X`) — content is in vault under TMD alias
 - Co-work session names (`/sessions/awesome-fervent-hypatia`) — content is in vault as `claude-cowork`
 
-## Full Workflow: Export, Enrich, Audit
+## Full Workflow: Export, Enrich, Dedupe, Audit
 
 ```bash
 # 1. Export all sessions to vault
@@ -83,12 +83,27 @@ python3 scripts/export_sessions_to_obsidian.py
 # 2. Enrich with Haiku (titles, summaries, keywords) — parallel
 python3 scripts/generate_titles.py --skip-enriched --workers 10
 
-# 3. Run audit to verify coverage
-python3 scripts/audit_sessions.py --output audit_rob_dev_$(date +%Y-%m-%d).md
+# 3. Remove duplicates (enrichment renames files, leaving old copies)
+python3 scripts/dedupe_vault.py              # remove duplicates
+python3 scripts/dedupe_vault.py --dry-run    # preview what would be removed
 
-# 4. Render the report
+# 4. Run audit to verify coverage
+python3 scripts/audit_sessions.py --output audit_rob_dev_$(date +%Y-%m-%d).md
+python3 scripts/audit_sessions.py --account robert   # audit other accounts
+
+# 5. Render the report
 cat audit_rob_dev_$(date +%Y-%m-%d).md
 ```
+
+### Deduplication
+
+`dedupe_vault.py` groups vault files by `session_id` from frontmatter. When multiple files share the same session_id, it scores each by:
+1. Has summary (enriched) — +100
+2. Title source quality (generated > desktop > codex > custom > first_message)
+3. Has keywords — +10
+4. File size tiebreaker
+
+The highest-scoring file is kept; the rest are deleted.
 
 ## Rendering the Report Inline
 

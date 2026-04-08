@@ -4,5 +4,6 @@
     "~/.claude/projects"
   ],
   "codex_sessions": "~/.codex/sessions",
-  "accounts": []
+  "accounts": [],
+  "extra_project_roots": []
 }

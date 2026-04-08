@@ -150,6 +150,13 @@ def update_file(md_path, enrichment, dry_run=False):
     summary_short = enrichment.get("summary_short", "")
     summary_long = enrichment.get("summary_long", "")
     keywords = enrichment.get("keywords", "")
+    # Haiku sometimes returns keywords as a list instead of a string
+    if isinstance(keywords, list):
+        keywords = ", ".join(str(k) for k in keywords)
+    if isinstance(summary_short, list):
+        summary_short = " ".join(str(s) for s in summary_short)
+    if isinstance(summary_long, list):
+        summary_long = "\n".join(str(s) for s in summary_long)
 
     old_title = fm.get("title", "")
     title_source = fm.get("title_source", "")
