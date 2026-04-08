@@ -28,21 +28,31 @@ from export_sessions_to_obsidian import _is_interactive_session, load_config
 # Project root discovery
 # ---------------------------------------------------------------------------
 
-def scan_project_roots(home):
+def scan_project_roots(home, extra_roots=None):
     """Find all project directories for an account.
 
-    Two-direction discovery:
+    Three-direction discovery:
     1. Search for .claude directories under home — any dir with .claude is a project
     2. Extract cwds from session JSONL — every cwd is a project directory
+    3. Check extra_project_roots from config — user-specified directories
 
     The parent of each discovered project becomes a "root" for grouping
-    in the report. No hardcoded root paths.
+    in the report.
     """
     project_paths = set()  # full paths of project directories
 
     # Direction 1: Find all .claude directories (fast filesystem search)
-    # Search common locations up to reasonable depth
     search_roots = [home]
+    # Add extra roots from config (e.g. ~/DocsLocal on machines that use it)
+    # Resolve ~ relative to the target account's home, not the current user
+    if extra_roots:
+        for root in extra_roots:
+            if root.startswith("~/"):
+                expanded = os.path.join(home, root[2:])
+            else:
+                expanded = root
+            if os.path.isdir(expanded):
+                search_roots.append(expanded)
     for root in search_roots:
         if not os.path.isdir(root):
             continue
@@ -394,10 +404,10 @@ def find_orphan_cwds(all_cwds, known_paths):
 # Report generation
 # ---------------------------------------------------------------------------
 
-def generate_report(home, vault_path, account):
+def generate_report(home, vault_path, account, extra_roots=None):
     """Generate the full audit report as markdown."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    projects = scan_project_roots(home)
+    projects = scan_project_roots(home, extra_roots=extra_roots)
     cli = scan_cli_sessions(home)
     desktop, desktop_missing_parent = scan_desktop_sessions(home)
     codex = scan_codex_sessions(home)
@@ -550,7 +560,8 @@ def main():
         home = f"/Users/{args.account}"
     vault = str(args.vault or cfg["vault_path"])
 
-    report = generate_report(home, vault, args.account)
+    extra_roots = cfg.get("extra_project_roots", [])
+    report = generate_report(home, vault, args.account, extra_roots=extra_roots)
 
     if args.output:
         args.output.write_text(report)
