@@ -115,7 +115,11 @@ def main():
     print()
 
     # Ensure vault exists
-    Path(vault).mkdir(parents=True, exist_ok=True)
+    vault_path = Path(vault)
+    if not vault_path.exists():
+        print(f"Vault directory not found: {vault}")
+        print(f"Run: python3 scripts/setup.py")
+        sys.exit(1)
 
     if not args.audit_only:
         # --- Export ---

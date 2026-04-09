@@ -58,12 +58,13 @@ def scan_project_roots(home, extra_roots=None):
             continue
         try:
             for dirpath, dirnames, filenames in os.walk(root):
-                # Skip hidden dirs, node_modules, .git internals
+                # Check for .claude before filtering (it starts with .)
+                if ".claude" in dirnames and dirpath != home:
+                    project_paths.add(dirpath)
+                # Skip hidden dirs, node_modules, .git internals for descent
                 dirnames[:] = [d for d in dirnames
                                if not d.startswith(".") and d not in
                                ("node_modules", "__pycache__", "venv", ".venv")]
-                if ".claude" in os.listdir(dirpath) and dirpath != home:
-                    project_paths.add(dirpath)
                 # Don't descend too deep
                 depth = dirpath.replace(root, "").count(os.sep)
                 if depth >= 4:

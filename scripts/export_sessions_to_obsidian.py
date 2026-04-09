@@ -22,7 +22,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -37,22 +37,16 @@ def check_dir(path, label=""):
     """
     p = Path(path)
     try:
-        p.stat()
+        if not p.is_dir():
+            return False
+        list(p.iterdir())
+        return True
     except PermissionError:
-        print(f"WARNING: {label or path} exists but permission denied — "
-              "re-run apply_cross_account_acls.sh with sudo", file=sys.stderr)
+        print(f"WARNING: {label or path} — permission denied. "
+              "Run: sudo bash scripts/apply_cross_account_acls.sh", file=sys.stderr)
         return False
     except OSError:
         return False
-    if not p.is_dir():
-        return False
-    try:
-        list(p.iterdir())
-    except PermissionError:
-        print(f"WARNING: {label or path} not readable — "
-              "re-run apply_cross_account_acls.sh with sudo", file=sys.stderr)
-        return False
-    return True
 
 GENERIC_DEFAULTS = {
     "vault_path": str(Path.home() / "obsidian-session-vault"),
@@ -489,7 +483,7 @@ def extract_codex_meta(jsonl_path):
 def session_date(jsonl_path):
     """Get the modification time of the JSONL file as a date string."""
     mtime = jsonl_path.stat().st_mtime
-    return datetime.fromtimestamp(mtime)
+    return datetime.fromtimestamp(mtime, tz=timezone.utc)
 
 
 def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
@@ -709,11 +703,13 @@ def _is_interactive_session(jsonl_path):
                     except (json.JSONDecodeError, KeyError):
                         pass
                 if user_count >= MIN_USER_MESSAGES:
+                    # Multi-turn sessions are always kept regardless of
+                    # has_enqueue — we can stop scanning early here.
                     break
             if '"queue-operation"' in line and '"enqueue"' in line:
                 has_enqueue = True
 
-    # Filter: queue-operation enqueue with few user messages
+    # Filter: single-turn sessions with queue-operation (claude -p calls)
     if user_count < MIN_USER_MESSAGES and has_enqueue:
         return False
 

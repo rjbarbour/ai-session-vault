@@ -144,6 +144,9 @@ def enrich_session(md_content):
         if len(parts) >= 3:
             body = truncate_for_enrichment(parts[2])
             md_content = "---" + parts[1] + "---" + body
+        # If still too large after turn-based truncation, hard-truncate
+        if len(md_content) > MAX_ENRICHMENT_CHARS:
+            md_content = md_content[:MAX_ENRICHMENT_CHARS] + "\n\n*[Content truncated]*"
 
     prompt = "Enrich this session:\n\n" + md_content
     try:
@@ -212,17 +215,8 @@ def update_file(md_path, enrichment, dry_run=False):
         print(f"    keywords: {keywords}", flush=True)
         return
 
-    # Build updated frontmatter lines
-    lines = text.split("\n")
-
-    # Remove old enrichment fields if re-enriching
-    lines = [l for l in lines if not l.startswith((
-        "summary_short:", "summary_long:", "keywords:",
-        "original_title:", "haiku_title:",
-    ))]
-    text = "\n".join(lines)
-
-    # Rebuild frontmatter line by line (safer than string.replace)
+    # Rebuild frontmatter line by line — old enrichment fields are
+    # skipped and re-added with new values (no string.replace needed)
     lines = text.split("\n")
     new_lines = []
     in_frontmatter = False
