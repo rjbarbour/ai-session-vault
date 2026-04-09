@@ -140,7 +140,7 @@ See `docs/cross-account-access.md` for details on the three permission layers (P
 | `setup.py` | Pre-flight checks and guided setup |
 | `export_all.py` | Full delta refresh pipeline |
 | `export_sessions_to_obsidian.py` | Core export (single account) |
-| `generate_titles.py` | AI enrichment via Claude Haiku |
+| `enrich_sessions.py` | AI enrichment via Claude Haiku |
 | `dedupe_vault.py` | Remove duplicate vault files |
 | `vault_health.py` | Report and fix vault inconsistencies |
 | `audit_sessions.py` | Session coverage report per account |

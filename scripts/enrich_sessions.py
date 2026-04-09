@@ -6,7 +6,7 @@ Uses judgment to decide whether to keep the original title or substitute
 the Haiku-generated one.
 
 Usage:
-    python3 scripts/generate_titles.py [--vault PATH] [--dry-run]
+    python3 scripts/enrich_sessions.py [--vault PATH] [--dry-run]
 
 Requires the `claude` CLI to be installed and authenticated.
 """
