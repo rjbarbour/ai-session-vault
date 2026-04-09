@@ -1510,6 +1510,86 @@ class TestFindSessionFilesWithCowork:
         assert len(cowork_found) == 1
 
 
+class TestManifestCachedDiscovery:
+    def test_noninteractive_cached_and_skipped(self, tmp_path):
+        """Non-interactive sessions are cached in manifest and skipped on second call."""
+        from manifest import _empty_manifest, cache_interactive_status
+
+        proj = tmp_path / "project"
+        proj.mkdir()
+        # Create a non-interactive file (single turn + enqueue)
+        f = proj / "enrichment-call.jsonl"
+        f.write_text(
+            json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "p"}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "Generate a title"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "Title"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+
+        # First call: no manifest, should check file and find 0 interactive
+        found = find_session_files([proj], codex)
+        assert len(found) == 0
+
+        # Second call with manifest: populate cache
+        manifest = _empty_manifest()
+        found = find_session_files([proj], codex, manifest=manifest)
+        assert len(found) == 0
+        # The cache should now have is_interactive=False
+        entry = manifest["sessions"].get("enrichment-call", {})
+        assert entry.get("source", {}).get("is_interactive") is False
+
+    def test_interactive_cached(self, tmp_path):
+        """Interactive sessions are cached as True in manifest."""
+        from manifest import _empty_manifest
+
+        proj = tmp_path / "project"
+        proj.mkdir()
+        f = proj / "real-session.jsonl"
+        f.write_text(
+            json.dumps({"type": "user", "message": {"content": "first"}}) + "\n"
+            + json.dumps({"type": "assistant", "message": {"content": "reply"}}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "second"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+
+        manifest = _empty_manifest()
+        found = find_session_files([proj], codex, manifest=manifest)
+        assert len(found) == 1
+        entry = manifest["sessions"].get("real-session", {})
+        assert entry.get("source", {}).get("is_interactive") is True
+
+    def test_cached_noninteractive_skips_file_read(self, tmp_path):
+        """With a cached non-interactive verdict and unchanged mtime, file is not read."""
+        from manifest import _empty_manifest
+
+        proj = tmp_path / "project"
+        proj.mkdir()
+        f = proj / "cached-skip.jsonl"
+        f.write_text(
+            json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "p"}) + "\n"
+            + json.dumps({"type": "user", "message": {"content": "Gen title"}}) + "\n"
+        )
+        codex = tmp_path / "codex"
+        codex.mkdir()
+
+        # Pre-populate manifest with cached non-interactive status
+        stat = f.stat()
+        manifest = _empty_manifest()
+        manifest["sessions"]["cached-skip"] = {
+            "source": {
+                "path": str(f),
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+                "is_interactive": False,
+            }
+        }
+
+        found = find_session_files([proj], codex, manifest=manifest)
+        assert len(found) == 0
+
+
 class TestFindSessionFilesEdgeCases:
     def test_non_dir_child_in_parent_skipped(self, tmp_path):
         parent = tmp_path / "projects"
