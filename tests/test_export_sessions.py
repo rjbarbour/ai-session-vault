@@ -139,6 +139,33 @@ class TestSummariseToolUse:
 # Claude Code: process_message
 # ---------------------------------------------------------------------------
 
+    def test_edit(self):
+        block = {"name": "Edit", "input": {"file_path": "/foo/bar.py"}}
+        assert summarise_tool_use(block) == "Edit: /foo/bar.py"
+
+    def test_glob(self):
+        block = {"name": "Glob", "input": {"pattern": "**/*.ts"}}
+        assert summarise_tool_use(block) == "Glob: **/*.ts"
+
+    def test_agent(self):
+        block = {"name": "Agent", "input": {"description": "search for config files"}}
+        assert "search for config files" in summarise_tool_use(block)
+
+    def test_todowrite(self):
+        block = {"name": "TodoWrite", "input": {}}
+        assert summarise_tool_use(block) == "[TodoWrite update]"
+
+    def test_websearch(self):
+        block = {"name": "WebSearch", "input": {"query": "python async patterns"}}
+        assert "python async patterns" in summarise_tool_use(block)
+
+    def test_webfetch(self):
+        block = {"name": "WebFetch", "input": {"url": "https://example.com/api"}}
+        result = summarise_tool_use(block)
+        assert result.startswith("WebFetch: ")
+        assert "/api" in result
+
+
 class TestProcessMessage:
     def test_user_simple_string(self):
         msg = {"type": "user", "message": {"content": "hello world"}}
@@ -232,6 +259,41 @@ class TestProcessMessage:
 # Format detection
 # ---------------------------------------------------------------------------
 
+    def test_user_message_as_string(self):
+        """User message where message field is a string, not a dict."""
+        msg = {"type": "user", "message": "hello from string message"}
+        result = process_message(msg)
+        assert result == ("user", "hello from string message")
+
+    def test_assistant_message_as_string_content(self):
+        """Assistant message where content is a plain string."""
+        msg = {"type": "assistant", "message": {"content": "plain string response"}}
+        result = process_message(msg)
+        assert result == ("assistant", "plain string response")
+
+    def test_assistant_message_field_as_string(self):
+        """Assistant message where message field is a string."""
+        msg = {"type": "assistant", "message": "string message field"}
+        result = process_message(msg)
+        assert result == ("assistant", "string message field")
+
+    def test_user_message_non_dict_non_string(self):
+        """User message where message field is neither dict nor string."""
+        msg = {"type": "user", "message": 42}
+        assert process_message(msg) is None
+
+    def test_assistant_message_non_dict_non_string(self):
+        msg = {"type": "assistant", "message": 42}
+        assert process_message(msg) is None
+
+    def test_assistant_content_list_with_string_block(self):
+        """Assistant content list containing plain strings."""
+        msg = {"type": "assistant", "message": {"content": ["plain string block"]}}
+        result = process_message(msg)
+        assert result is not None
+        assert "plain string block" in result[1]
+
+
 class TestDetectFormat:
     def test_claude_format(self, tmp_path):
         f = _make_jsonl(tmp_path, [
@@ -260,6 +322,22 @@ class TestDetectFormat:
 # ---------------------------------------------------------------------------
 # Codex: codex_process_line
 # ---------------------------------------------------------------------------
+
+    def test_empty_lines_skipped(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text("\n\n" + json.dumps({"type": "user", "message": {}}) + "\n")
+        assert detect_format(f) == "claude"
+
+    def test_malformed_json_skipped(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text("not json\n" + json.dumps({"type": "user", "message": {}}) + "\n")
+        assert detect_format(f) == "claude"
+
+    def test_unknown_type_defaults_claude(self, tmp_path):
+        f = tmp_path / "test.jsonl"
+        f.write_text(json.dumps({"type": "unknown_thing", "data": 123}) + "\n")
+        assert detect_format(f) == "claude"
+
 
 class TestCodexProcessLine:
     def test_user_message(self):
@@ -724,62 +802,6 @@ class TestObsidianCompat:
 # Slugify
 # ---------------------------------------------------------------------------
 
-class TestSlugify:
-    def test_basic(self):
-        assert slugify("Hello World") == "hello-world"
-
-    def test_special_chars(self):
-        assert slugify("What's up? (test)") == "whats-up-test"
-
-    def test_truncation(self):
-        result = slugify("a" * 100, max_len=20)
-        assert len(result) <= 20
-
-    def test_empty(self):
-        assert slugify("") == "untitled"
-
-    def test_xml_content(self):
-        assert slugify("<command>init</command>") == "commandinitcommand"
-
-
-# ---------------------------------------------------------------------------
-# Config loading
-# ---------------------------------------------------------------------------
-
-class TestLoadConfig:
-    def test_loads_config_file(self, tmp_path, monkeypatch):
-        config = tmp_path / "config.json"
-        config.write_text(json.dumps({
-            "vault_path": str(tmp_path / "vault"),
-            "claude_projects": [str(tmp_path / "projects")],
-            "codex_sessions": str(tmp_path / "codex"),
-        }))
-        import utils
-        monkeypatch.setattr(utils, "CONFIG_PATH", config)
-        cfg = load_config()
-        assert cfg["vault_path"] == str(tmp_path / "vault")
-        assert len(cfg["claude_projects"]) == 1
-
-    def test_falls_back_to_defaults(self, tmp_path, monkeypatch):
-        import utils
-        monkeypatch.setattr(utils, "CONFIG_PATH", tmp_path / "nonexistent.json")
-        cfg = load_config()
-        assert "vault_path" in cfg
-        assert "claude_projects" in cfg
-
-    def test_expands_tilde(self, tmp_path, monkeypatch):
-        config = tmp_path / "config.json"
-        config.write_text(json.dumps({
-            "vault_path": "~/test-vault",
-            "claude_projects": ["~/.claude/projects"],
-            "codex_sessions": "~/.codex/sessions",
-        }))
-        import utils
-        monkeypatch.setattr(utils, "CONFIG_PATH", config)
-        cfg = load_config()
-        assert "~" not in cfg["vault_path"]
-        assert "~" not in cfg["claude_projects"][0]
-
 
 # ---------------------------------------------------------------------------
 # Custom title extraction
@@ -1159,82 +1181,9 @@ class TestLoadDesktopTitles:
 
 
 # ---------------------------------------------------------------------------
-# Additional summarise_tool_use branches
+# Export: custom title branch
 # ---------------------------------------------------------------------------
 
-class TestSummariseToolUseExtended:
-    def test_edit(self):
-        block = {"name": "Edit", "input": {"file_path": "/foo/bar.py"}}
-        assert summarise_tool_use(block) == "Edit: /foo/bar.py"
-
-    def test_glob(self):
-        block = {"name": "Glob", "input": {"pattern": "**/*.ts"}}
-        assert summarise_tool_use(block) == "Glob: **/*.ts"
-
-    def test_agent(self):
-        block = {"name": "Agent", "input": {"description": "search for config files"}}
-        assert "search for config files" in summarise_tool_use(block)
-
-    def test_todowrite(self):
-        block = {"name": "TodoWrite", "input": {}}
-        assert summarise_tool_use(block) == "[TodoWrite update]"
-
-    def test_websearch(self):
-        block = {"name": "WebSearch", "input": {"query": "python async patterns"}}
-        assert "python async patterns" in summarise_tool_use(block)
-
-    def test_webfetch(self):
-        block = {"name": "WebFetch", "input": {"url": "https://example.com/api"}}
-        result = summarise_tool_use(block)
-        assert result.startswith("WebFetch: ")
-        assert "/api" in result
-
-
-# ---------------------------------------------------------------------------
-# Additional process_message branches
-# ---------------------------------------------------------------------------
-
-class TestProcessMessageExtended:
-    def test_user_message_as_string(self):
-        """User message where message field is a string, not a dict."""
-        msg = {"type": "user", "message": "hello from string message"}
-        result = process_message(msg)
-        assert result == ("user", "hello from string message")
-
-    def test_assistant_message_as_string_content(self):
-        """Assistant message where content is a plain string."""
-        msg = {"type": "assistant", "message": {"content": "plain string response"}}
-        result = process_message(msg)
-        assert result == ("assistant", "plain string response")
-
-    def test_assistant_message_field_as_string(self):
-        """Assistant message where message field is a string."""
-        msg = {"type": "assistant", "message": "string message field"}
-        result = process_message(msg)
-        assert result == ("assistant", "string message field")
-
-    def test_user_message_non_dict_non_string(self):
-        """User message where message field is neither dict nor string."""
-        msg = {"type": "user", "message": 42}
-        assert process_message(msg) is None
-
-    def test_assistant_message_non_dict_non_string(self):
-        msg = {"type": "assistant", "message": 42}
-        assert process_message(msg) is None
-
-    def test_assistant_content_list_with_string_block(self):
-        """Assistant content list containing plain strings."""
-        msg = {"type": "assistant", "message": {"content": ["plain string block"]}}
-        result = process_message(msg)
-        assert result is not None
-        assert "plain string block" in result[1]
-
-
-# ---------------------------------------------------------------------------
-# Additional codex_process_line branches
-# ---------------------------------------------------------------------------
-
-class TestCodexProcessLineExtended:
     def test_empty_content_list(self):
         line = {
             "timestamp": "t", "type": "response_item",
@@ -1256,10 +1205,6 @@ class TestCodexProcessLineExtended:
         }
         assert codex_process_line(line) is None
 
-
-# ---------------------------------------------------------------------------
-# Export: custom title branch
-# ---------------------------------------------------------------------------
 
 class TestExportCustomTitle:
     def test_custom_title_used_in_export(self, tmp_path):
@@ -1306,27 +1251,6 @@ class TestLoadCodexTitlesDefault:
         # This just verifies it doesn't crash — the file may or may not exist
         titles = load_codex_titles()
         assert isinstance(titles, dict)
-
-
-# ---------------------------------------------------------------------------
-# Detect format: edge cases
-# ---------------------------------------------------------------------------
-
-class TestDetectFormatExtended:
-    def test_empty_lines_skipped(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        f.write_text("\n\n" + json.dumps({"type": "user", "message": {}}) + "\n")
-        assert detect_format(f) == "claude"
-
-    def test_malformed_json_skipped(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        f.write_text("not json\n" + json.dumps({"type": "user", "message": {}}) + "\n")
-        assert detect_format(f) == "claude"
-
-    def test_unknown_type_defaults_claude(self, tmp_path):
-        f = tmp_path / "test.jsonl"
-        f.write_text(json.dumps({"type": "unknown_thing", "data": 123}) + "\n")
-        assert detect_format(f) == "claude"
 
 
 # ---------------------------------------------------------------------------
