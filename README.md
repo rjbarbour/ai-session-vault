@@ -1,20 +1,20 @@
 # ai-session-vault
 
-Export Claude Code and Codex session history as searchable Markdown in an Obsidian vault.
+Export Claude Code, Codex, and Co-work session history as searchable Markdown in an Obsidian vault.
 
 ## Problem
 
-AI coding tools store conversation history in opaque formats (JSONL, SQLite) scattered across tool-specific directories. If you use multiple tools or multiple machines/accounts, finding a past session means guessing where it is and searching each location separately.
+AI coding sessions are scattered across multiple tools (Claude Code CLI, Claude Desktop, Co-work, Codex), each with its own storage format. If you use multiple accounts or machines, finding a past session means guessing which tool and account it was in, then searching each location separately.
 
 ## Solution
 
-Export all sessions to a single Obsidian vault as Markdown with YAML frontmatter. Search once across everything — by keyword or semantically — then go to the original session, pull context into a current conversation, or share it.
+Export all sessions to a single Obsidian vault as Markdown with YAML frontmatter. Search once across everything — by keyword or semantically — then go to the original session, pull context into current work, or share it.
 
 ## Requirements
 
 - **Python 3.8+** with pytest (`pip install pytest`)
 - **Claude Code CLI** (optional, for AI-generated titles and summaries) — install and run `claude /login`
-- **Obsidian** (optional, for browsing) — any text editor works for search
+- **Obsidian** (optional, for browsing) — any text editor or grep works for search
 
 ## Quick Start
 
@@ -23,7 +23,7 @@ Export all sessions to a single Obsidian vault as Markdown with YAML frontmatter
 git clone https://github.com/rjbarbour/ai-session-vault.git
 cd ai-session-vault
 
-# 2. Run setup (checks prerequisites, creates config and vault)
+# 2. Run setup (checks all prerequisites, creates config and vault)
 python3 scripts/setup.py
 
 # 3. Export everything
@@ -32,9 +32,69 @@ python3 scripts/export_all.py
 # 4. Open the vault directory in Obsidian
 ```
 
-The setup script checks Python, Claude CLI, vault directory, session sources, and cross-account permissions. It creates `config.json` from the example if needed.
+The setup script checks Python, Claude CLI (install + auth), Obsidian, config, vault directory, session sources, and cross-account permissions. It creates `config.json` from the example if needed.
 
-`export_all.py` runs the full pipeline: export → enrich → dedupe → audit. Use `--skip-enrich` if Claude CLI is not available.
+## Pipeline
+
+`export_all.py` runs the full delta refresh pipeline:
+
+```
+DISCOVER  → find session files across all accounts
+SCAN      → stat JSONL files + read vault frontmatter → update manifest
+EXPORT    → new/changed sessions only (delta)
+DEDUPE    → remove duplicate vault files
+ENRICH    → AI-generated titles, summaries, keywords via Haiku
+HEALTH    → report orphans, stale entries, inconsistencies
+AUDIT     → per-account coverage report
+```
+
+Subsequent runs are fast — only new or changed sessions are processed. The manifest tracks what's been exported and what state it's in.
+
+```bash
+python3 scripts/export_all.py                # delta refresh (fast)
+python3 scripts/export_all.py --full         # re-export everything
+python3 scripts/export_all.py --skip-enrich  # no Haiku calls
+python3 scripts/export_all.py --audit-only   # just run audits
+```
+
+## Session Data Sources
+
+| Source | Format | Status |
+|--------|--------|--------|
+| Claude Code CLI | JSONL in `~/.claude/projects/` | Supported |
+| Claude Code Desktop | JSONL + JSON metadata in `Application Support/Claude/` | Supported (titles from metadata) |
+| Claude Co-work | JSONL in `Application Support/Claude/local-agent-mode-sessions/` | Supported |
+| OpenAI Codex | JSONL in `~/.codex/sessions/` + titles from `session_index.jsonl` | Supported |
+| Codex SQLite | `~/.codex/logs_1.sqlite` | Investigated — debug logs only, JSONL is sufficient |
+| claude.ai | Server-side only | Not exportable |
+
+## Exported File Format
+
+Each session becomes one Markdown file with YAML frontmatter:
+
+```yaml
+---
+session_id: b824361f-0d22-4f5c-b857-9947c9b02481
+date: 2026-04-07
+time: 19:40
+source: claude-cli          # claude-cli, claude-desktop, claude-cowork, codex
+account: rob_dev
+project: "/Users/rob_dev/DocsLocal/chat_session_index"
+title: "Session Naming and Cross-Account Indexing"
+title_source: custom        # custom, desktop, codex, generated, first_message
+source_mtime: 1712345678.123
+summary_short: "Built session naming pipeline..."
+summary_long: "**Context**\n- The AI session vault project..."
+keywords: "session-indexing, cross-account-access, obsidian-vault"
+---
+
+# Session Naming and Cross-Account Indexing
+
+## User (turn 1)
+...
+## Assistant (turn 2)
+...
+```
 
 ## Configuration
 
@@ -43,101 +103,59 @@ Copy `config.example.json` to `config.json` and edit:
 ```json
 {
   "vault_path": "~/obsidian-session-vault",
-  "claude_projects": [
-    "~/.claude/projects"
-  ],
+  "claude_projects": ["~/.claude/projects"],
   "codex_sessions": "~/.codex/sessions",
-  "accounts": []
+  "accounts": [],
+  "extra_project_roots": [],
+  "exclude_projects": []
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `vault_path` | Directory where Markdown files are written. Open this in Obsidian. |
-| `claude_projects` | Array of paths. Each can be a single project dir (contains `*.jsonl`) or a parent dir (contains project subdirs). `~` is expanded. |
-| `codex_sessions` | Path to Codex sessions directory. |
-| `accounts` | Other macOS accounts to read sessions from (for `apply_cross_account_acls.sh`). Leave empty for single-account use. |
+| `vault_path` | Directory where Markdown files are written |
+| `claude_projects` | Array of paths to Claude project directories. `~` is expanded. |
+| `codex_sessions` | Path to Codex sessions directory |
+| `accounts` | Other macOS accounts to export from (requires ACLs) |
+| `extra_project_roots` | Additional directories to scan for projects (resolved per account) |
+| `exclude_projects` | Project name patterns to skip during export |
 
-`config.json` is gitignored. CLI flags override config values:
+`config.json` is gitignored. Without it, generic defaults are used.
 
-```bash
-python3 scripts/export_sessions_to_obsidian.py --vault /other/vault --claude-project ~/.claude/projects/specific-project
-```
+## Multi-Account Setup (macOS)
 
-Without `config.json`, generic defaults are used (`~/.claude/projects`, `~/.codex/sessions`).
+To export sessions from other macOS accounts:
 
-## How It Works
+1. Add account names to `config.json`: `"accounts": ["otheraccount"]`
+2. Run setup to check permissions: `python3 scripts/setup.py`
+3. Apply ACLs when prompted (or manually): `sudo bash scripts/apply_cross_account_acls.sh`
+4. For `~/Documents` access: grant Full Disk Access to Terminal in System Settings
 
-`scripts/export_sessions_to_obsidian.py` reads JSONL session files, auto-detects the format (Claude Code vs Codex), and writes one Markdown file per session into the vault.
+See `docs/cross-account-access.md` for details on the three permission layers (POSIX, ACLs, TCC).
 
-Each exported file contains:
-- YAML frontmatter: `session_id`, `date`, `time`, `source`, message counts, `tags`
-- User and assistant messages as `## User (turn N)` / `## Assistant (turn N)` sections
-- Tool calls summarised as one-liners (e.g. `Bash: \`ls -la\``, `Read: /foo/bar.md`)
-- Thinking blocks, tool results, system reminders, and developer messages filtered out
-- Long messages truncated (user: 3000 chars, assistant: 5000 chars)
+## Scripts
 
-### Output file naming
+| Script | Purpose |
+|--------|---------|
+| `setup.py` | Pre-flight checks and guided setup |
+| `export_all.py` | Full delta refresh pipeline |
+| `export_sessions_to_obsidian.py` | Core export (single account) |
+| `generate_titles.py` | AI enrichment via Claude Haiku |
+| `dedupe_vault.py` | Remove duplicate vault files |
+| `vault_health.py` | Report and fix vault inconsistencies |
+| `audit_sessions.py` | Session coverage report per account |
+| `apply_cross_account_acls.sh` | Cross-account read permissions |
+| `manifest.py` | Delta state tracking (library, not CLI) |
+| `utils.py` | Shared utilities (library, not CLI) |
 
-```
-{date}_{source}_{session-id-first-8-chars}.md
-```
+## Documentation
 
-Example: `2026-03-31_claude_7ee2430b.md`
-
-## Session Data Sources
-
-| Source | Path | Format | Status |
-|--------|------|--------|--------|
-| Claude Code CLI | `~/.claude/projects/<encoded-path>/*.jsonl` | JSONL | Supported |
-| Codex (JSONL) | `~/.codex/sessions/**/*.jsonl` | JSONL | Supported |
-| Codex (SQLite) | `~/.codex/logs_1.sqlite` | SQLite | Not yet supported |
-| Co-work | `~/Library/Application Support/Claude/local-agent-mode-sessions/` | Unknown | Not yet supported |
-| Claude Desktop | `~/Library/Application Support/Claude/claude-code-sessions/` | JSON metadata (links to CLI JSONL via `cliSessionId`) | Not yet supported |
-| claude.ai | Server-side only | N/A | Not exportable |
-
-### Supported JSONL formats
-
-**Claude Code** (`~/.claude/projects/<encoded-path>/*.jsonl`):
-```json
-{"type": "user", "message": {"content": "..."}}
-{"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}
-```
-
-**Codex** (`~/.codex/sessions/**/*.jsonl`):
-```json
-{"timestamp": "...", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "..."}]}}
-```
-
-## Multi-Account Setup (Optional)
-
-If you have multiple macOS accounts with session data, you can grant read access so the export runs from one account:
-
-1. Add account names to `config.json`:
-   ```json
-   "accounts": ["otheraccount1", "otheraccount2"]
-   ```
-
-2. Apply read-only ACLs:
-   ```bash
-   sudo bash scripts/apply_cross_account_acls.sh
-   ```
-
-3. Add their project paths to `claude_projects`:
-   ```json
-   "claude_projects": [
-     "~/.claude/projects",
-     "/Users/otheraccount1/.claude/projects"
-   ]
-   ```
-
-To remove ACLs later: `sudo bash scripts/apply_cross_account_acls.sh --remove`
-
-## Obsidian Tips
-
-- **Dataview** plugin — query YAML frontmatter fields (e.g. list all sessions by date, filter by source)
-- **Smart Connections** plugin — semantic/vector search across session content
-- **Concurrent access warning:** if multiple macOS accounts open the same vault via fast user switching, Obsidian's SQLite index can corrupt. Quit Obsidian before switching accounts.
+| Doc | Contents |
+|-----|----------|
+| `docs/use-cases.md` | 5 setup scenarios + 5 day-to-day usage patterns |
+| `docs/audit-guide.md` | How to run and interpret the audit report |
+| `docs/cross-account-access.md` | POSIX/ACL/TCC permission layers on macOS |
+| `docs/troubleshooting.md` | Common issues and solutions |
 
 ## Tests
 
@@ -145,4 +163,4 @@ To remove ACLs later: `sudo bash scripts/apply_cross_account_acls.sh --remove`
 python3 -m pytest tests/test_export_sessions.py -v
 ```
 
-63 tests covering both formats. No dependencies beyond Python 3 stdlib + pytest.
+132 tests covering both formats, config loading, title extraction, source differentiation, filtering, YAML safety, and more. 100% coverage on the core export module.

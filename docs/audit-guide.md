@@ -74,25 +74,38 @@ Sessions whose `cwd` doesn't match any scanned project root. Common causes:
 - Pre-iCloud paths (`~/Documents/Projects/X`) — content is in vault under TMD alias
 - Co-work session names (`/sessions/awesome-fervent-hypatia`) — content is in vault as `claude-cowork`
 
-## Full Workflow: Export, Enrich, Dedupe, Audit
+## Full Workflow
+
+The simplest way to run everything is the pipeline:
 
 ```bash
-# 1. Export all sessions to vault
-python3 scripts/export_sessions_to_obsidian.py
+# Delta refresh (fast — only new/changed sessions)
+python3 scripts/export_all.py
 
-# 2. Enrich with Haiku (titles, summaries, keywords) — parallel
+# Full re-export (ignores manifest, re-processes everything)
+python3 scripts/export_all.py --full
+
+# Just audit, no export
+python3 scripts/export_all.py --audit-only
+```
+
+Individual steps can also be run separately:
+
+```bash
+# Export one account
+python3 scripts/export_sessions_to_obsidian.py --account robfo
+
+# Enrich unenriched sessions
 python3 scripts/generate_titles.py --skip-enriched --workers 10
 
-# 3. Remove duplicates (enrichment renames files, leaving old copies)
-python3 scripts/dedupe_vault.py              # remove duplicates
-python3 scripts/dedupe_vault.py --dry-run    # preview what would be removed
+# Dedupe
+python3 scripts/dedupe_vault.py
 
-# 4. Run audit to verify coverage
-python3 scripts/audit_sessions.py --output audit_rob_dev_$(date +%Y-%m-%d).md
-python3 scripts/audit_sessions.py --account robert   # audit other accounts
+# Vault health check
+python3 scripts/vault_health.py --fix
 
-# 5. Render the report
-cat audit_rob_dev_$(date +%Y-%m-%d).md
+# Audit one account
+python3 scripts/audit_sessions.py --account rob_dev --output audit.md
 ```
 
 ### Deduplication
