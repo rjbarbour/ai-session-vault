@@ -1187,7 +1187,9 @@ class TestSummariseToolUseExtended:
 
     def test_webfetch(self):
         block = {"name": "WebFetch", "input": {"url": "https://example.com/api"}}
-        assert "example.com" in summarise_tool_use(block)
+        result = summarise_tool_use(block)
+        assert result.startswith("WebFetch: ")
+        assert "/api" in result
 
 
 # ---------------------------------------------------------------------------
