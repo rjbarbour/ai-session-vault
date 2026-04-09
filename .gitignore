@@ -8,3 +8,4 @@ AGENTS.md
 PLAN.md
 cross_account_permissions.md
 audit_*.md
+cron_refresh.log

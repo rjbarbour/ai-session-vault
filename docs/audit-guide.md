@@ -96,7 +96,7 @@ Individual steps can also be run separately:
 python3 scripts/export_sessions_to_obsidian.py --account robfo
 
 # Enrich unenriched sessions
-python3 scripts/generate_titles.py --skip-enriched --workers 10
+python3 scripts/enrich_sessions.py --skip-enriched --workers 10
 
 # Dedupe
 python3 scripts/dedupe_vault.py

@@ -67,6 +67,34 @@ def scan_sources(manifest, session_files):
     return seen_ids
 
 
+def quick_check_sources(manifest):
+    """Fast check: stat all known source paths against manifest.
+
+    Returns True if any source has changed (mtime or size differs).
+    Returns True if manifest is empty (first run).
+    Does NOT discover new files — only checks known ones.
+    """
+    import os
+    sessions = manifest.get("sessions", {})
+    if not sessions:
+        return True
+
+    for session_id, entry in sessions.items():
+        source = entry.get("source", {})
+        path = source.get("path")
+        if not path:
+            continue
+        try:
+            stat = os.stat(path)
+            if (abs(stat.st_mtime - source.get("mtime", 0)) > 0.01
+                    or stat.st_size != source.get("size", -1)):
+                return True
+        except OSError:
+            continue
+
+    return False
+
+
 def is_known_noninteractive(manifest, session_id, mtime, size):
     """Check if a session is cached as non-interactive in the manifest.
 

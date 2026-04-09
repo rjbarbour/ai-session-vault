@@ -54,7 +54,7 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 
 - `export_sessions_to_obsidian.py` — JSONL parsing, format detection, session export, title extraction from multiple sources (custom, Desktop, Codex, Co-work, first message)
 - `manifest.py` — delta state tracking: `load_manifest`, `save_manifest`, `scan_sources`, `scan_vault`, `compute_delta`, `check_health`
-- `generate_titles.py` — Haiku enrichment: titles, summaries, keywords. Parallel workers. Content-based artefact filtering.
+- `enrich_sessions.py` — Haiku enrichment: titles, summaries, keywords. Parallel workers. Content-based artefact filtering.
 - `export_all.py` — pipeline orchestrator: discover → scan → export → dedupe → enrich → health → audit
 
 ### Key patterns

@@ -27,7 +27,7 @@ from export_sessions_to_obsidian import (
 )
 from manifest import (
     load_manifest, save_manifest, scan_sources, scan_vault,
-    compute_delta, update_after_export, check_health,
+    compute_delta, update_after_export, check_health, quick_check_sources,
 )
 
 
@@ -71,7 +71,7 @@ def discover_all_sessions(accounts, cfg, manifest=None):
 
 def run_enrich(workers, skip_enriched=True):
     """Run the enrichment script via subprocess (uses claude CLI)."""
-    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "generate_titles.py"),
+    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "enrich_sessions.py"),
            "--workers", str(workers)]
     if skip_enriched:
         cmd.append("--skip-enriched")
@@ -146,6 +146,14 @@ def main():
     # Step 1-3: Discover, scan sources, scan vault
     # ================================================================
     manifest = load_manifest(str(vault))
+
+    # Fast path: if no known sources changed, skip full discovery
+    if not args.full and manifest.get("sessions") and not quick_check_sources(manifest):
+        total = len(list(vault.glob("*.md")))
+        print(f"No changes detected — {total} sessions in vault")
+        print()
+        save_manifest(str(vault), manifest)
+        return
 
     print("=" * 50)
     print("DISCOVER")
