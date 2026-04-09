@@ -55,6 +55,32 @@ GENERIC_DEFAULTS = {
 }
 
 
+def resolve_account_paths(account=None, cfg=None):
+    """Resolve all session-related paths for a given account.
+
+    Returns (home, claude_project_dirs, codex_sessions, desktop_dir, cowork_dir).
+    """
+    if cfg is None:
+        cfg = load_config()
+
+    if account:
+        home = Path(f"/Users/{account}")
+    else:
+        home = Path.home()
+
+    if account:
+        claude_project_dirs = [home / ".claude" / "projects"]
+        codex_sessions = home / ".codex" / "sessions"
+    else:
+        claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
+        codex_sessions = Path(cfg["codex_sessions"])
+
+    desktop_dir = home / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    cowork_dir = home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+
+    return home, claude_project_dirs, codex_sessions, desktop_dir, cowork_dir
+
+
 def load_config():
     """Load config.json if present, else return generic defaults.
 
@@ -625,6 +651,7 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         safe_snippet = first_msg_snippet.replace(chr(34), "'").replace("\n", " ")
         lines.append(f"first_message: \"{safe_snippet}\"")
 
+    lines.append(f"source_mtime: {jsonl_path.stat().st_mtime}")
     lines.append(f"user_messages: {user_count}")
     lines.append(f"assistant_messages: {assistant_count}")
     lines.append(f"tags: [{source_tag}-session]")
@@ -788,6 +815,8 @@ def main():  # pragma: no cover
     parser.add_argument("--claude-project", type=Path, default=None,
                         help="Single Claude project dir (overrides config.json)")
     parser.add_argument("--codex-sessions", type=Path, default=None)
+    parser.add_argument("--full", action="store_true",
+                        help="Ignore manifest and re-export all sessions")
     args = parser.parse_args()
 
     # Resolve home directory for the target account
@@ -838,10 +867,42 @@ def main():  # pragma: no cover
     cowork_count = sum(1 for s, _ in session_files if s == "cowork")
     print(f"Found {len(session_files)} session files ({claude_count} Claude, {codex_count} Codex, {cowork_count} Co-work)")
     print(f"Exporting to: {vault}")
+
+    # Delta export: use manifest to skip unchanged sessions
+    from manifest import (
+        load_manifest, save_manifest, scan_sources,
+        compute_delta, update_after_export,
+    )
+
+    manifest = load_manifest(str(vault))
+    scan_sources(manifest, session_files)
+
+    if args.full:
+        # Full export — process everything
+        to_process = [(tag, path, None) for tag, path in session_files]
+        print(f"Full export: {len(to_process)} sessions")
+    else:
+        delta = compute_delta(manifest)
+        to_process = (
+            [(tag, path, None) for tag, path in delta["to_export"]]
+            + [(tag, path, old) for tag, path, old in delta["to_reexport"]]
+        )
+        skipped = len(delta["skip"])
+        to_enrich_count = len(delta["to_enrich"])
+        orphan_count = len(delta["orphans"])
+        print(f"Delta: {len(to_process)} to export, {skipped} unchanged, "
+              f"{to_enrich_count} need enrichment, {orphan_count} orphans")
+
     print()
 
     exported = 0
-    for source_tag, jsonl_path in session_files:
+    for source_tag, jsonl_path, old_vault_file in to_process:
+        # Delete old vault file if re-exporting a changed session
+        if old_vault_file:
+            old_path = vault / old_vault_file
+            if old_path.exists():
+                old_path.unlink()
+
         result = export_session(jsonl_path, vault, source_tag=source_tag,
                                 desktop_titles=desktop_titles,
                                 codex_titles=codex_titles,
@@ -849,11 +910,14 @@ def main():  # pragma: no cover
         if result:
             size_kb = result.stat().st_size / 1024
             print(f"  [{source_tag:6s}] {result.name} ({size_kb:.1f} KB)")
+            update_after_export(manifest, jsonl_path.stem, source_tag,
+                                jsonl_path, result.name)
             exported += 1
         else:
             print(f"  [{source_tag:6s}] {jsonl_path.stem[:20]}... (skipped — no messages)")
 
-    print(f"\nExported {exported}/{len(session_files)} sessions")
+    save_manifest(str(vault), manifest)
+    print(f"\nExported {exported} sessions")
 
 
 if __name__ == "__main__":  # pragma: no cover
