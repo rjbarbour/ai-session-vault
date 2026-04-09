@@ -954,7 +954,7 @@ class TestAccountAndProject:
         result = export_session(f, vault)
         text = result.read_text()
         assert "account: rob_dev" in text
-        assert "project: /Users/rob_dev/DocsLocal/myproject" in text
+        assert 'project: "/Users/rob_dev/DocsLocal/myproject"' in text
 
     def test_codex_project_from_session_meta(self, tmp_path):
         vault = tmp_path / "vault"
@@ -974,7 +974,7 @@ class TestAccountAndProject:
         ])
         result = export_session(f, vault, source_tag="codex")
         text = result.read_text()
-        assert "project: /Users/rob_dev/projects/codex_proj" in text
+        assert 'project: "/Users/rob_dev/projects/codex_proj"' in text
         assert "account: rob_dev" in text
 
 
@@ -1407,7 +1407,7 @@ class TestMalformedJsonl:
         result = export_session(f, vault)
         text = result.read_text()
         # project falls back to parent directory name
-        assert f"project: {tmp_path.name}" in text
+        assert f'project: "{tmp_path.name}"' in text
 
 
 # ---------------------------------------------------------------------------
