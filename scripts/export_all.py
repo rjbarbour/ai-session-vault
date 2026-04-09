@@ -49,11 +49,13 @@ def get_accounts(cfg):
     return accounts
 
 
-def run_export(account, is_current_user):
+def run_export(account, is_current_user, full=False):
     """Run the export script for one account."""
     cmd = [sys.executable, os.path.join(SCRIPT_DIR, "export_sessions_to_obsidian.py")]
     if not is_current_user:
         cmd.extend(["--account", account])
+    if full:
+        cmd.append("--full")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     return result
 
@@ -103,6 +105,8 @@ def main():
                         help="Parallel workers for enrichment (default: 10)")
     parser.add_argument("--save-audits", action="store_true",
                         help="Save audit reports to files (default: print summary)")
+    parser.add_argument("--full", action="store_true",
+                        help="Ignore manifest and re-export all sessions")
     args = parser.parse_args()
 
     current_user = os.environ.get("USER", "unknown")
@@ -129,7 +133,7 @@ def main():
         for account in accounts:
             is_current = account == current_user
             print(f"\n--- {account} ---")
-            result = run_export(account, is_current)
+            result = run_export(account, is_current, full=args.full)
             # Show first line (session count) and last line (exported count)
             lines = result.stdout.strip().split("\n")
             if lines:
