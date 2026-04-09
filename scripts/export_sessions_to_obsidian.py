@@ -55,6 +55,32 @@ GENERIC_DEFAULTS = {
 }
 
 
+def resolve_account_paths(account=None, cfg=None):
+    """Resolve all session-related paths for a given account.
+
+    Returns (home, claude_project_dirs, codex_sessions, desktop_dir, cowork_dir).
+    """
+    if cfg is None:
+        cfg = load_config()
+
+    if account:
+        home = Path(f"/Users/{account}")
+    else:
+        home = Path.home()
+
+    if account:
+        claude_project_dirs = [home / ".claude" / "projects"]
+        codex_sessions = home / ".codex" / "sessions"
+    else:
+        claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
+        codex_sessions = Path(cfg["codex_sessions"])
+
+    desktop_dir = home / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+    cowork_dir = home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+
+    return home, claude_project_dirs, codex_sessions, desktop_dir, cowork_dir
+
+
 def load_config():
     """Load config.json if present, else return generic defaults.
 
@@ -844,13 +870,12 @@ def main():  # pragma: no cover
 
     # Delta export: use manifest to skip unchanged sessions
     from manifest import (
-        load_manifest, save_manifest, scan_sources, scan_vault,
+        load_manifest, save_manifest, scan_sources,
         compute_delta, update_after_export,
     )
 
     manifest = load_manifest(str(vault))
     scan_sources(manifest, session_files)
-    scan_vault(manifest, str(vault))
 
     if args.full:
         # Full export — process everything

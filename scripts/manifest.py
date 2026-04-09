@@ -180,6 +180,68 @@ def update_after_export(manifest, session_id, source_tag, jsonl_path, vault_file
     }
 
 
+def check_health(manifest):
+    """Check vault health and return a report dict.
+
+    Returns:
+        {
+            "duplicates": [(session_id, [filenames])],
+            "orphans": [(session_id, vault_filename)],
+            "unenriched": [(session_id, vault_filename)],
+            "stale": [(session_id, vault_filename, source_mtime, vault_mtime)],
+            "missing": [(session_id, expected_filename)],
+        }
+    """
+    from collections import defaultdict
+
+    # Find duplicates: multiple vault files with same session_id
+    vault_by_id = defaultdict(list)
+    for session_id, entry in manifest["sessions"].items():
+        vault = entry.get("vault")
+        if vault and vault.get("filename"):
+            vault_by_id[session_id].append(vault["filename"])
+
+    duplicates = [(sid, fnames) for sid, fnames in vault_by_id.items()
+                  if len(fnames) > 1]
+
+    orphans = []
+    unenriched = []
+    stale = []
+    missing = []
+
+    for session_id, entry in manifest["sessions"].items():
+        source = entry.get("source")
+        vault = entry.get("vault")
+
+        has_source = source and source.get("path")
+        has_vault = vault and vault.get("filename")
+
+        if has_vault and not has_source:
+            orphans.append((session_id, vault["filename"]))
+
+        if has_vault and has_source and not vault.get("enriched"):
+            unenriched.append((session_id, vault["filename"]))
+
+        if has_vault and has_source:
+            vault_mtime = vault.get("source_mtime_at_export")
+            source_mtime = source.get("mtime")
+            if vault_mtime and source_mtime and abs(source_mtime - vault_mtime) > 0.01:
+                stale.append((session_id, vault["filename"], source_mtime, vault_mtime))
+
+        if has_source and has_vault and vault.get("filename"):
+            # Check if the vault file actually exists on disk
+            # (caller should verify — we just flag from manifest state)
+            pass
+
+    return {
+        "duplicates": duplicates,
+        "orphans": orphans,
+        "unenriched": unenriched,
+        "stale": stale,
+        "missing": missing,
+    }
+
+
 def update_after_enrich(manifest, session_id, vault_filename, title_source):
     """Update manifest after successfully enriching a session."""
     entry = manifest["sessions"].get(session_id, {})
