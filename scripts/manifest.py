@@ -9,9 +9,14 @@ This enables delta export: only new or changed sessions are processed.
 The manifest file lives at {vault_path}/.export_manifest.json.
 """
 import json
-import os
-import tempfile
 from pathlib import Path
+
+try:
+    from utils import parse_frontmatter_file, atomic_write
+except ImportError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from utils import parse_frontmatter_file, atomic_write
 
 
 MANIFEST_VERSION = 1
@@ -37,16 +42,7 @@ def load_manifest(vault_dir):
 def save_manifest(vault_dir, manifest):
     """Save the manifest atomically (write to temp file, then rename)."""
     manifest_path = Path(vault_dir) / MANIFEST_FILENAME
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(vault_dir), suffix=".manifest.tmp"
-    )
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(manifest, f, indent=2)
-        Path(tmp_path).rename(manifest_path)
-    except Exception:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
+    atomic_write(manifest_path, json.dumps(manifest, indent=2))
 
 
 def scan_sources(manifest, session_files):
@@ -80,7 +76,7 @@ def scan_vault(manifest, vault_dir):
     seen_ids = set()
 
     for md_file in vault_path.glob("*.md"):
-        fm = _read_frontmatter(md_file)
+        fm = parse_frontmatter_file(md_file)
         session_id = fm.get("session_id", "")
         if not session_id:
             continue
@@ -189,8 +185,10 @@ def check_health(manifest):
             "orphans": [(session_id, vault_filename)],
             "unenriched": [(session_id, vault_filename)],
             "stale": [(session_id, vault_filename, source_mtime, vault_mtime)],
-            "missing": [(session_id, expected_filename)],
         }
+
+    Note: missing-from-disk detection is done by vault_health.py, not here,
+    since it requires filesystem access that the manifest doesn't track.
     """
     from collections import defaultdict
 
@@ -228,17 +226,11 @@ def check_health(manifest):
             if vault_mtime and source_mtime and abs(source_mtime - vault_mtime) > 0.01:
                 stale.append((session_id, vault["filename"], source_mtime, vault_mtime))
 
-        if has_source and has_vault and vault.get("filename"):
-            # Check if the vault file actually exists on disk
-            # (caller should verify — we just flag from manifest state)
-            pass
-
     return {
         "duplicates": duplicates,
         "orphans": orphans,
         "unenriched": unenriched,
         "stale": stale,
-        "missing": missing,
     }
 
 
@@ -258,24 +250,6 @@ def update_after_enrich(manifest, session_id, vault_filename, title_source):
 def _empty_manifest():
     return {"version": MANIFEST_VERSION, "sessions": {}}
 
-
-def _read_frontmatter(md_path):
-    """Read YAML frontmatter from the first lines of a markdown file."""
-    fm = {}
-    try:
-        with open(md_path) as f:
-            first_line = f.readline()
-            if first_line.strip() != "---":
-                return fm
-            for line in f:
-                line = line.strip()
-                if line == "---":
-                    break
-                key, _, val = line.partition(": ")
-                fm[key.strip()] = val.strip().strip('"')
-    except (OSError, UnicodeDecodeError):
-        pass
-    return fm
 
 
 def _parse_float(s):

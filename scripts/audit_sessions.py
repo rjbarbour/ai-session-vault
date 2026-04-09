@@ -20,8 +20,13 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from export_sessions_to_obsidian import _is_interactive_session, check_dir, load_config
+try:
+    from utils import load_config, check_dir
+    from export_sessions_to_obsidian import is_interactive_session
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from utils import load_config, check_dir
+    from export_sessions_to_obsidian import is_interactive_session
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +138,7 @@ def scan_cli_sessions(home):
         top_jsonl = [f for f in os.listdir(proj_path) if f.endswith(".jsonl")]
         for f in top_jsonl:
             full = os.path.join(proj_path, f)
-            if not _is_interactive_session(Path(full)):
+            if not is_interactive_session(Path(full)):
                 continue
             with open(full, errors="replace") as fh:
                 for line in fh:
@@ -158,7 +163,7 @@ def scan_cli_sessions(home):
                         if not f.endswith(".jsonl"):
                             continue
                         full = os.path.join(subagent_dir, f)
-                        if _is_interactive_session(Path(full)):
+                        if is_interactive_session(Path(full)):
                             with open(full, errors="replace") as fh:
                                 for line in fh:
                                     try:
@@ -259,7 +264,7 @@ def scan_cowork_sessions(home):
                     pass
             elif f.endswith(".jsonl") and f != "audit.jsonl":
                 full = os.path.join(root, f)
-                if _is_interactive_session(Path(full)):
+                if is_interactive_session(Path(full)):
                     jsonl_count += 1
 
     return metadata_cwds, jsonl_count

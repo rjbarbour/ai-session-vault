@@ -25,82 +25,19 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
-
-
-def check_dir(path, label=""):
-    """Check if a directory exists and is readable.
-
-    Returns True if accessible, False if not found, and prints a warning
-    if the path exists but is not readable (permission denied).
-    """
-    p = Path(path)
-    try:
-        if not p.is_dir():
-            return False
-        list(p.iterdir())
-        return True
-    except PermissionError:
-        print(f"WARNING: {label or path} — permission denied. "
-              "Run: sudo bash scripts/apply_cross_account_acls.sh", file=sys.stderr)
-        return False
-    except OSError:
-        return False
-
-GENERIC_DEFAULTS = {
-    "vault_path": str(Path.home() / "obsidian-session-vault"),
-    "claude_projects": [str(Path.home() / ".claude" / "projects")],
-    "codex_sessions": str(Path.home() / ".codex" / "sessions"),
-}
-
-
-def resolve_account_paths(account=None, cfg=None):
-    """Resolve all session-related paths for a given account.
-
-    Returns (home, claude_project_dirs, codex_sessions, desktop_dir, cowork_dir).
-    """
-    if cfg is None:
-        cfg = load_config()
-
-    if account:
-        home = Path(f"/Users/{account}")
-    else:
-        home = Path.home()
-
-    if account:
-        claude_project_dirs = [home / ".claude" / "projects"]
-        codex_sessions = home / ".codex" / "sessions"
-    else:
-        claude_project_dirs = [Path(p) for p in cfg["claude_projects"]]
-        codex_sessions = Path(cfg["codex_sessions"])
-
-    desktop_dir = home / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
-    cowork_dir = home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
-
-    return home, claude_project_dirs, codex_sessions, desktop_dir, cowork_dir
-
-
-def load_config():
-    """Load config.json if present, else return generic defaults.
-
-    Expands ~ in all path values.
-    """
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
-    else:
-        cfg = dict(GENERIC_DEFAULTS)
-
-    cfg["vault_path"] = str(Path(cfg["vault_path"]).expanduser())
-    cfg["claude_projects"] = [
-        str(Path(p).expanduser())
-        for p in cfg.get("claude_projects", GENERIC_DEFAULTS["claude_projects"])
-    ]
-    cfg["codex_sessions"] = str(
-        Path(cfg.get("codex_sessions", GENERIC_DEFAULTS["codex_sessions"])).expanduser()
+# Import shared utilities — these are re-exported at module level for
+# backward compatibility with scripts and tests that import from here.
+try:
+    from utils import (
+        load_config, check_dir, slugify, resolve_account_paths,
+        extract_account, CONFIG_PATH, GENERIC_DEFAULTS,
     )
-    return cfg
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from utils import (
+        load_config, check_dir, slugify, resolve_account_paths,
+        extract_account, CONFIG_PATH, GENERIC_DEFAULTS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,15 +295,8 @@ extract_text = claude_extract_text
 process_message = claude_process_message
 
 
-def slugify(text, max_len=50):
-    """Convert text to a filesystem-safe slug."""
-    text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_]+", "-", text)
-    text = re.sub(r"-+", "-", text).strip("-")
-    if len(text) > max_len:
-        text = text[:max_len].rstrip("-")
-    return text or "untitled"
+
+# slugify is imported from utils and re-exported at module level
 
 
 def extract_custom_title(jsonl_path):
@@ -445,7 +375,7 @@ def load_cowork_sessions(cowork_dir=None):
                 for jf in paired_dir.rglob("*.jsonl"):
                     if jf.name == "audit.jsonl":
                         continue
-                    if _is_interactive_session(jf):
+                    if is_interactive_session(jf):
                         jsonl_files.append(jf)
         except (json.JSONDecodeError, OSError):  # pragma: no cover — defensive guard
             continue
@@ -564,20 +494,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     if not project:
         project = jsonl_path.parent.name
 
-    # Extract account from project path or JSONL file path
-    account = ""
-    if project.startswith("/Users/"):
-        parts = project.split("/")
-        if len(parts) >= 3:
-            account = parts[2]
-    if not account:
-        # Fall back to JSONL file path (e.g. /Users/rob_dev/Library/.../<session>.jsonl)
-        jsonl_str = str(jsonl_path)
-        if "/Users/" in jsonl_str:
-            parts = jsonl_str.split("/")
-            users_idx = parts.index("Users")
-            if users_idx + 1 < len(parts):
-                account = parts[users_idx + 1]
+    # Extract account from project path, falling back to JSONL file path
+    account = extract_account(project) or extract_account(str(jsonl_path))
 
     # Refine source tag based on entrypoint, Desktop/Co-work metadata
     if source_tag == "cowork":
@@ -701,7 +619,7 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
 MIN_USER_MESSAGES = 2
 
 
-def _is_interactive_session(jsonl_path):
+def is_interactive_session(jsonl_path):
     """Check if a JSONL file is a real interactive session, not a claude -p call.
 
     Filters out non-interactive sessions that match EITHER:
@@ -766,7 +684,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
         if jsonl_files:
             # Direct project dir — export its top-level JSONL files
             for f in jsonl_files:
-                if _is_interactive_session(f):
+                if is_interactive_session(f):
                     found.append(("claude", f))
         else:
             # Parent dir containing project subdirs
@@ -782,7 +700,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                 if top_jsonl:
                     # Has top-level JSONL — export those
                     for f in top_jsonl:
-                        if _is_interactive_session(f):
+                        if is_interactive_session(f):
                             found.append(("claude", f))
                 else:
                     # No top-level JSONL — check for session subdirs with
@@ -793,7 +711,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                         subagent_dir = session_dir / "subagents"
                         if subagent_dir.is_dir():
                             for f in sorted(subagent_dir.glob("*.jsonl")):
-                                if _is_interactive_session(f):
+                                if is_interactive_session(f):
                                     found.append(("claude", f))
     if check_dir(codex_sessions, "Codex sessions"):
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):
