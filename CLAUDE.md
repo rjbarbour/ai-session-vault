@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Does
 
-Exports Claude Code and Codex JSONL session history to a single Obsidian vault as searchable Markdown. The goal is to search once across all sessions — regardless of which tool, account, or machine they came from — to find past work, pull context into a current session, or export for sharing.
+Exports Claude Code, Codex, and Co-work session history to a single Obsidian vault as searchable Markdown. The goal is to search once across all sessions — regardless of which tool, account, or machine they came from — to find past work, pull context into a current session, or export for sharing.
 
-Currently supports Claude Code JSONL and Codex JSONL. Co-work sessions, Codex SQLite, and Claude Desktop metadata are not yet supported. No dependencies beyond Python 3 stdlib + pytest.
+Supports Claude Code CLI, Claude Desktop, Claude Co-work, and Codex JSONL. No dependencies beyond Python 3 stdlib + pytest.
 
 ## Commands
 
@@ -17,9 +17,23 @@ python3 -m pytest tests/test_export_sessions.py -v
 # Run a single test
 python3 -m pytest tests/test_export_sessions.py -v -k "test_name"
 
-# Export sessions
-python3 scripts/export_sessions_to_obsidian.py
-python3 scripts/export_sessions_to_obsidian.py --vault /path --claude-project ~/.claude/projects/ENCODED-PATH
+# Full pipeline (delta — only new/changed sessions)
+python3 scripts/export_all.py
+
+# Full re-export ignoring manifest
+python3 scripts/export_all.py --full
+
+# Export without enrichment
+python3 scripts/export_all.py --skip-enrich
+
+# Setup/preflight checks
+python3 scripts/setup.py
+
+# Vault health check
+python3 scripts/vault_health.py
+
+# Audit a specific account
+python3 scripts/audit_sessions.py --account rob_dev
 ```
 
 ## Configuration
@@ -28,17 +42,32 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 
 ## Architecture
 
-`scripts/export_sessions_to_obsidian.py` is a single-file script that:
-1. Loads config from `config.json` (or uses generic defaults)
-2. Auto-detects JSONL format from the first parseable line (Claude Code vs Codex)
-3. Parses messages, filtering out thinking blocks, tool results, system reminders, developer messages, and reasoning
-4. Summarises tool calls as one-liners (e.g. `Bash: \`ls -la\``)
-5. Writes one Markdown file per session with YAML frontmatter
+### Package structure
 
-Legacy aliases `extract_text` and `process_message` exist at module level for backward test compatibility — they map to `claude_extract_text` and `claude_process_message`.
+`scripts/` is a Python package. Shared utilities live in `scripts/utils.py`:
+- `load_config`, `check_dir`, `slugify`, `check_claude_cli`
+- `parse_frontmatter_file`, `parse_frontmatter_text`
+- `resolve_account_paths`, `extract_account`, `resolve_vault`
+- `atomic_write`
 
-Tests use `tmp_path` fixtures with a `_make_jsonl` helper to create test JSONL files in-memory.
+### Core modules
+
+- `export_sessions_to_obsidian.py` — JSONL parsing, format detection, session export, title extraction from multiple sources (custom, Desktop, Codex, Co-work, first message)
+- `manifest.py` — delta state tracking: `load_manifest`, `save_manifest`, `scan_sources`, `scan_vault`, `compute_delta`, `check_health`
+- `generate_titles.py` — Haiku enrichment: titles, summaries, keywords. Parallel workers. Content-based artefact filtering.
+- `export_all.py` — pipeline orchestrator: discover → scan → export → dedupe → enrich → health → audit
+
+### Key patterns
+
+- Legacy aliases `extract_text` and `process_message` exist at module level for backward test compatibility
+- `is_interactive_session()` filters out `claude -p` calls using dual check: single-turn + queue-operation/enqueue, plus content signature matching
+- Manifest uses `mtime + size` for JSONL change detection (append-only files)
+- Vault files are never deleted by the pipeline — duplicates go to `.deleted/`, orphans are flagged not removed
 
 ## Planned Work
 
-See `AGENTS.md` (local, not tracked in git) for operational notes and planned work.
+See `PLAN.md` (local, not tracked in git) for operational notes, planned work, and phase status.
+
+## Git Workflow
+
+Always use feature branches and PRs. Never push directly to main.
