@@ -616,7 +616,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     lines.append(f"time: {time_str}")
     lines.append(f"source: {source_tag}")
     lines.append(f"account: {account}")
-    lines.append(f"project: {project}")
+    lines.append(f"project: \"{project}\"")
+
     safe_title = title_candidate.replace(chr(34), "'").replace("\n", " ")
     lines.append(f"title: \"{safe_title}\"")
     lines.append(f"title_source: {title_source}")
