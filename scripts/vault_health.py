@@ -8,16 +8,18 @@ Usage:
     python3 scripts/vault_health.py --fix        # report and fix issues
 """
 import argparse
-import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from export_sessions_to_obsidian import load_config
-from manifest import (
-    load_manifest, save_manifest, scan_vault, check_health,
-)
-from dedupe_vault import find_duplicates, score_session, parse_frontmatter
+try:
+    from utils import load_config
+    from manifest import load_manifest, save_manifest, scan_vault, check_health
+    from dedupe_vault import find_duplicates
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from utils import load_config
+    from manifest import load_manifest, save_manifest, scan_vault, check_health
+    from dedupe_vault import find_duplicates
 
 
 def fix_duplicates(vault_dir, duplicates):

@@ -8,29 +8,19 @@ Usage:
     python3 scripts/dedupe_vault.py [--vault PATH] [--dry-run]
 """
 import argparse
-import os
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from export_sessions_to_obsidian import load_config
+try:
+    from utils import load_config, parse_frontmatter_file
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from utils import load_config, parse_frontmatter_file
 
 
-def parse_frontmatter(path):
-    """Parse YAML frontmatter from a vault markdown file."""
-    fm = {}
-    with open(path) as f:
-        first_line = f.readline()
-        if first_line.strip() != "---":
-            return fm
-        for line in f:
-            line = line.strip()
-            if line == "---":
-                break
-            key, _, val = line.partition(": ")
-            fm[key.strip()] = val.strip().strip('"')
-    return fm
+# Backward compat alias
+parse_frontmatter = parse_frontmatter_file
 
 
 def score_session(fm, file_size):

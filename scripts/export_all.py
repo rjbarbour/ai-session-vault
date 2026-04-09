@@ -20,32 +20,15 @@ from pathlib import Path
 SCRIPT_DIR = str(Path(__file__).resolve().parent)
 sys.path.insert(0, SCRIPT_DIR)
 
+from utils import load_config, resolve_account_paths, check_claude_cli
 from export_sessions_to_obsidian import (
-    load_config, resolve_account_paths, export_session,
-    find_session_files, load_desktop_titles, load_cowork_sessions,
-    load_codex_titles,
+    export_session, find_session_files,
+    load_desktop_titles, load_cowork_sessions, load_codex_titles,
 )
 from manifest import (
     load_manifest, save_manifest, scan_sources, scan_vault,
     compute_delta, update_after_export, check_health,
 )
-
-
-def check_claude_cli():
-    """Check if the claude CLI is installed and authenticated."""
-    if not shutil.which("claude"):
-        return False, "claude CLI not found"
-    try:
-        result = subprocess.run(
-            ["claude", "--model", "haiku", "-p",
-             "--system-prompt", "Reply with just OK"],
-            input="test", capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode != 0:
-            return False, "claude CLI not authenticated"
-        return True, ""
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False, "claude CLI not responding"
 
 
 def discover_all_sessions(accounts, cfg):

@@ -1,13 +1,13 @@
-"""Tests for export_sessions_to_obsidian.py"""
+"""Tests for export_sessions_to_obsidian.py and utils.py"""
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
-sys_path = Path(__file__).resolve().parent.parent / "scripts"
-import sys
-sys.path.insert(0, str(sys_path))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+from utils import load_config, slugify
 from export_sessions_to_obsidian import (
     extract_text,
     summarise_tool_use,
@@ -17,14 +17,12 @@ from export_sessions_to_obsidian import (
     codex_process_line,
     codex_summarise_function_call,
     parse_codex_session,
-    load_config,
-    slugify,
     extract_custom_title,
     load_codex_titles,
     extract_codex_meta,
     load_desktop_titles,
     load_cowork_sessions,
-    _is_interactive_session,
+    is_interactive_session,
     find_session_files,
 )
 
@@ -756,15 +754,15 @@ class TestLoadConfig:
             "claude_projects": [str(tmp_path / "projects")],
             "codex_sessions": str(tmp_path / "codex"),
         }))
-        import export_sessions_to_obsidian as mod
-        monkeypatch.setattr(mod, "CONFIG_PATH", config)
+        import utils
+        monkeypatch.setattr(utils, "CONFIG_PATH", config)
         cfg = load_config()
         assert cfg["vault_path"] == str(tmp_path / "vault")
         assert len(cfg["claude_projects"]) == 1
 
     def test_falls_back_to_defaults(self, tmp_path, monkeypatch):
-        import export_sessions_to_obsidian as mod
-        monkeypatch.setattr(mod, "CONFIG_PATH", tmp_path / "nonexistent.json")
+        import utils
+        monkeypatch.setattr(utils, "CONFIG_PATH", tmp_path / "nonexistent.json")
         cfg = load_config()
         assert "vault_path" in cfg
         assert "claude_projects" in cfg
@@ -776,8 +774,8 @@ class TestLoadConfig:
             "claude_projects": ["~/.claude/projects"],
             "codex_sessions": "~/.codex/sessions",
         }))
-        import export_sessions_to_obsidian as mod
-        monkeypatch.setattr(mod, "CONFIG_PATH", config)
+        import utils
+        monkeypatch.setattr(utils, "CONFIG_PATH", config)
         cfg = load_config()
         assert "~" not in cfg["vault_path"]
         assert "~" not in cfg["claude_projects"][0]
@@ -864,7 +862,7 @@ class TestIsInteractiveSession:
             {"type": "user", "message": {"content": "follow up"}},
             {"type": "assistant", "message": {"content": "more"}},
         ])
-        assert _is_interactive_session(f) is True
+        assert is_interactive_session(f) is True
 
     def test_single_turn_with_enqueue_filtered(self, tmp_path):
         f = _make_jsonl(tmp_path, [
@@ -873,14 +871,14 @@ class TestIsInteractiveSession:
             {"type": "user", "message": {"content": "Generate a title for this session"}},
             {"type": "assistant", "message": {"content": "Some Title"}},
         ])
-        assert _is_interactive_session(f) is False
+        assert is_interactive_session(f) is False
 
     def test_single_turn_without_enqueue_kept(self, tmp_path):
         f = _make_jsonl(tmp_path, [
             {"type": "user", "message": {"content": "a real one-turn session"}},
             {"type": "assistant", "message": {"content": "done"}},
         ])
-        assert _is_interactive_session(f) is True
+        assert is_interactive_session(f) is True
 
     def test_multi_turn_with_enqueue_kept(self, tmp_path):
         """Multi-turn sessions are kept even if they have queue-operation."""
@@ -891,7 +889,7 @@ class TestIsInteractiveSession:
             {"type": "user", "message": {"content": "second"}},
             {"type": "assistant", "message": {"content": "reply2"}},
         ])
-        assert _is_interactive_session(f) is True
+        assert is_interactive_session(f) is True
 
 
 # ---------------------------------------------------------------------------

@@ -22,26 +22,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
-    from export_sessions_to_obsidian import load_config, slugify
+    from utils import (
+        load_config, slugify, check_claude_cli, parse_frontmatter_text,
+        atomic_write,
+    )
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent))
-    from export_sessions_to_obsidian import load_config, slugify
+    from utils import (
+        load_config, slugify, check_claude_cli, parse_frontmatter_text,
+        atomic_write,
+    )
 
-
-def parse_frontmatter(text):
-    """Extract frontmatter as a dict and return (frontmatter_dict, body)."""
-    if not text.startswith("---\n"):
-        return {}, text
-    end = text.find("---", 4)
-    if end == -1:
-        return {}, text
-    fm_text = text[4:end]
-    body = text[end + 4:]
-    fm = {}
-    for line in fm_text.strip().split("\n"):
-        key, _, val = line.partition(": ")
-        fm[key.strip()] = val.strip().strip('"')
-    return fm, body
+# Alias for internal use
+parse_frontmatter = parse_frontmatter_text
 
 
 def extract_turns(body):
@@ -109,27 +102,9 @@ def truncate_for_enrichment(body):
     return "\n".join(kept)
 
 
-def check_claude_available():
-    """Verify Claude CLI is installed and can respond. Returns (ok, reason)."""
-    import shutil
-    if not shutil.which("claude"):
-        return False, "claude CLI not found in PATH"
-    try:
-        result = subprocess.run(
-            ["claude", "--model", "haiku", "-p",
-             "--system-prompt", "Reply with just OK"],
-            input="test", capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "login" in stderr.lower() or "auth" in stderr.lower():
-                return False, "claude CLI not authenticated — run: claude /login"
-            return False, f"claude CLI error: {stderr[:100]}"
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "claude CLI timed out"
-    except FileNotFoundError:
-        return False, "claude CLI not found"
+
+# check_claude_cli imported from utils (aliased as check_claude_available for compat)
+check_claude_available = check_claude_cli
 
 
 def enrich_session(md_content):
@@ -281,22 +256,10 @@ def update_file(md_path, enrichment, dry_run=False):
         new_name = md_path.name
     new_path = md_path.parent / new_name
 
-    # Atomic write: write to temp file then rename
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(md_path.parent), suffix=".md.tmp"
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
-            tmp_f.write(updated_text)
-        # Replace the original (or new name) atomically
-        Path(tmp_path).rename(new_path)
-        # Remove old file if renamed
-        if new_name != md_path.name and md_path.exists():
-            md_path.unlink()
-    except Exception:
-        # Clean up temp file on failure
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
+    # Atomic write to new path, then remove old file if renamed
+    atomic_write(new_path, updated_text)
+    if new_name != md_path.name and md_path.exists():
+        md_path.unlink()
 
     action = "REPLACED" if replace else "KEPT"
     print(f"  {action}: {new_name}", flush=True)
