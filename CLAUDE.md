@@ -62,6 +62,7 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 - Legacy aliases `extract_text` and `process_message` exist at module level for backward test compatibility
 - `is_interactive_session()` filters out `claude -p` calls using dual check: single-turn + queue-operation/enqueue, plus content signature matching
 - Manifest uses `mtime + size` for JSONL change detection (append-only files)
+- Discovery caches `is_interactive` per session in manifest — known non-interactive files are stat-only on subsequent runs (no file read)
 - Vault files are never deleted by the pipeline — duplicates go to `.deleted/`, orphans are flagged not removed
 
 ## Planned Work

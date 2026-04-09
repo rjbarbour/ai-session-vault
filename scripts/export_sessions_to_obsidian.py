@@ -673,10 +673,28 @@ def is_interactive_session(jsonl_path):
 
 
 def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=None,
-                       exclude_projects=None):
-    """Find all JSONL session files from all configured sources."""
+                       exclude_projects=None, manifest=None):
+    """Find all JSONL session files from all configured sources.
+
+    If manifest is provided, uses cached is_interactive status to avoid
+    reading JSONL files that are known to be non-interactive. Only files
+    that are new or changed since the last scan are fully inspected.
+    """
     exclude_set = set(exclude_projects or [])
     found = []
+
+    def _check_interactive(f):
+        """Check if a file is interactive, using manifest cache when possible."""
+        if manifest:
+            from manifest import is_known_noninteractive, cache_interactive_status
+            stat = f.stat()
+            if is_known_noninteractive(manifest, f.stem, stat.st_mtime, stat.st_size):
+                return False
+            result = is_interactive_session(f)
+            cache_interactive_status(manifest, f.stem, result)
+            return result
+        return is_interactive_session(f)
+
     for claude_project in claude_project_dirs:
         if not check_dir(claude_project, f"Claude projects ({claude_project})"):
             continue
@@ -684,7 +702,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
         if jsonl_files:
             # Direct project dir — export its top-level JSONL files
             for f in jsonl_files:
-                if is_interactive_session(f):
+                if _check_interactive(f):
                     found.append(("claude", f))
         else:
             # Parent dir containing project subdirs
@@ -700,7 +718,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                 if top_jsonl:
                     # Has top-level JSONL — export those
                     for f in top_jsonl:
-                        if is_interactive_session(f):
+                        if _check_interactive(f):
                             found.append(("claude", f))
                 else:
                     # No top-level JSONL — check for session subdirs with
@@ -711,7 +729,7 @@ def find_session_files(claude_project_dirs, codex_sessions, cowork_jsonl_files=N
                         subagent_dir = session_dir / "subagents"
                         if subagent_dir.is_dir():
                             for f in sorted(subagent_dir.glob("*.jsonl")):
-                                if is_interactive_session(f):
+                                if _check_interactive(f):
                                     found.append(("claude", f))
     if check_dir(codex_sessions, "Codex sessions"):
         for f in sorted(codex_sessions.rglob("rollout-*.jsonl")):

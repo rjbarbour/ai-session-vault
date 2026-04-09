@@ -31,8 +31,12 @@ from manifest import (
 )
 
 
-def discover_all_sessions(accounts, cfg):
-    """Discover session files for all accounts. Returns combined list."""
+def discover_all_sessions(accounts, cfg, manifest=None):
+    """Discover session files for all accounts. Returns combined list.
+
+    If manifest is provided, uses cached is_interactive status to skip
+    reading known non-interactive JSONL files (stat-only for unchanged files).
+    """
     all_sessions = []
     for account in accounts:
         is_current = account == os.environ.get("USER", "")
@@ -48,6 +52,7 @@ def discover_all_sessions(accounts, cfg):
             claude_dirs, codex_sessions,
             cowork_jsonl_files=cowork_jsonl,
             exclude_projects=exclude,
+            manifest=manifest,
         )
 
         # Store title lookups for use during export
@@ -140,13 +145,14 @@ def main():
     # ================================================================
     # Step 1-3: Discover, scan sources, scan vault
     # ================================================================
+    manifest = load_manifest(str(vault))
+
     print("=" * 50)
     print("DISCOVER")
     print("=" * 50)
-    all_sessions = discover_all_sessions(accounts, cfg)
+    all_sessions = discover_all_sessions(accounts, cfg, manifest=manifest)
     print(f"  Found {len(all_sessions)} session files across {len(accounts)} account(s)")
 
-    manifest = load_manifest(str(vault))
     source_session_files = [(s["source_tag"], s["jsonl_path"]) for s in all_sessions]
     scan_sources(manifest, source_session_files)
     scan_vault(manifest, str(vault))

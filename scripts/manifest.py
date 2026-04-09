@@ -67,6 +67,31 @@ def scan_sources(manifest, session_files):
     return seen_ids
 
 
+def is_known_noninteractive(manifest, session_id, mtime, size):
+    """Check if a session is cached as non-interactive in the manifest.
+
+    Returns True if the session is known to be non-interactive AND its
+    mtime+size haven't changed (so the cached verdict is still valid).
+    Returns False if unknown or changed (caller should do full check).
+    """
+    entry = manifest.get("sessions", {}).get(session_id, {})
+    source = entry.get("source", {})
+    if source.get("is_interactive") is False:
+        # Cached as non-interactive — verify file hasn't changed
+        if (abs(source.get("mtime", 0) - mtime) < 0.01
+                and source.get("size", -1) == size):
+            return True
+    return False
+
+
+def cache_interactive_status(manifest, session_id, is_interactive):
+    """Cache whether a session is interactive in the manifest."""
+    sessions = manifest.setdefault("sessions", {})
+    entry = sessions.setdefault(session_id, {})
+    source = entry.setdefault("source", {})
+    source["is_interactive"] = is_interactive
+
+
 def scan_vault(manifest, vault_dir):
     """Update manifest vault entries from vault frontmatter.
 
