@@ -436,6 +436,82 @@ def extract_codex_meta(jsonl_path):
     return "", ""
 
 
+def parse_session(jsonl_path):
+    """Parse a JSONL session file in a single pass.
+
+    Returns a dict with:
+        format: "claude" or "codex"
+        messages: [(role, text), ...]
+        project: cwd string
+        entrypoint: "cli", "claude-desktop", etc.
+        custom_title: from /rename command (Claude only)
+        codex_session_id: UUID from session_meta (Codex only)
+
+    Opens the file exactly once.
+    """
+    messages = []
+    fmt = None
+    project = ""
+    entrypoint = ""
+    custom_title = ""
+    codex_session_id = ""
+
+    with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Format detection (first parseable line)
+            if fmt is None:
+                if "payload" in data and data.get("type") in (
+                    "session_meta", "event_msg", "response_item", "turn_context",
+                ):
+                    fmt = "codex"
+                else:
+                    fmt = "claude"
+
+            # Metadata extraction (all formats)
+            if not project:
+                if fmt == "codex" and data.get("type") == "session_meta":
+                    payload = data.get("payload", {})
+                    codex_session_id = payload.get("id", "")
+                    project = payload.get("cwd", "")
+                else:
+                    cwd = data.get("cwd", "")
+                    if cwd:
+                        project = cwd
+            if not entrypoint:
+                ep = data.get("entrypoint", "")
+                if ep:
+                    entrypoint = ep
+
+            # Custom title (Claude only)
+            if data.get("type") == "custom-title":
+                custom_title = data.get("customTitle", "")
+
+            # Message parsing
+            if fmt == "codex":
+                result = codex_process_line(data)
+            else:
+                result = claude_process_message(data)
+            if result:
+                messages.append(result)
+
+    return {
+        "format": fmt or "claude",
+        "messages": messages,
+        "project": project,
+        "entrypoint": entrypoint,
+        "custom_title": custom_title,
+        "codex_session_id": codex_session_id,
+    }
+
+
 def session_date(jsonl_path):
     """Get the modification time of the JSONL file as a date string."""
     mtime = jsonl_path.stat().st_mtime
@@ -448,14 +524,17 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
 
     Auto-detects Claude Code vs Codex format.
     """
-    fmt = detect_format(jsonl_path)
+    # Single-pass parse: format, messages, metadata all from one file read
+    parsed = parse_session(jsonl_path)
+    fmt = parsed["format"]
+    messages = parsed["messages"]
+    project = parsed["project"] or jsonl_path.parent.name
+    entrypoint = parsed["entrypoint"]
+    custom_title = parsed["custom_title"]
+    codex_session_id = parsed["codex_session_id"]
+
     if source_tag is None:
         source_tag = fmt
-
-    if fmt == "codex":
-        messages = parse_codex_session(jsonl_path)
-    else:
-        messages = parse_claude_session(jsonl_path)
 
     if not messages:
         return None
@@ -464,35 +543,6 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
     dt = session_date(jsonl_path)
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H:%M")
-
-    # Extract project working directory and entrypoint from JSONL metadata
-    project = ""
-    entrypoint = ""
-    codex_session_id = ""
-    if fmt == "codex":
-        codex_session_id, project = extract_codex_meta(jsonl_path)
-    else:
-        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
-            for raw_line in f:
-                raw_line = raw_line.strip()
-                if not raw_line:  # pragma: no cover — defensive guard
-                    continue
-                try:
-                    line_data = json.loads(raw_line)
-                except json.JSONDecodeError:  # pragma: no cover — defensive guard
-                    continue
-                if not project:
-                    cwd = line_data.get("cwd", "")
-                    if cwd:
-                        project = cwd
-                if not entrypoint:
-                    ep = line_data.get("entrypoint", "")
-                    if ep:
-                        entrypoint = ep
-                if project and entrypoint:
-                    break
-    if not project:
-        project = jsonl_path.parent.name
 
     # Extract account from project path, falling back to JSONL file path
     account = extract_account(project) or extract_account(str(jsonl_path))
@@ -509,11 +559,6 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
 
     user_count = sum(1 for r, _ in messages if r == "user")
     assistant_count = sum(1 for r, _ in messages if r == "assistant")
-
-    # Title: prefer custom-title from JSONL, then Desktop title, then first message
-    custom_title = ""
-    if fmt == "claude":
-        custom_title = extract_custom_title(jsonl_path)
 
     first_user_msg = next((t for r, t in messages if r == "user"), "")
     # Strip XML tags and command wrappers for cleaner fallback titles
