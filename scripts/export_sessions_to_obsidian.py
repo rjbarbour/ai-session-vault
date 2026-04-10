@@ -21,8 +21,9 @@ Configuration:
 import argparse
 import json
 import re
+import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # Import shared utilities — these are re-exported at module level for
@@ -38,6 +39,39 @@ except ImportError:
         load_config, check_dir, slugify, resolve_account_paths,
         extract_account, CONFIG_PATH, GENERIC_DEFAULTS,
     )
+
+
+# ---------------------------------------------------------------------------
+# Archive helper
+# ---------------------------------------------------------------------------
+
+def archive_vault_file(vault_dir, vault_filename):
+    """Copy a vault file to vault_dir/archive/ with a date suffix.
+
+    Preserves the source file — caller is responsible for deleting it afterward.
+    Returns the archive Path, or None if the source file does not exist.
+
+    If an archive with the same name already exists (same day), appends
+    an incrementing counter: ..._archived_2026-04-10_1.md, _2, etc.
+    """
+    src = Path(vault_dir) / vault_filename
+    if not src.exists():
+        return None
+
+    archive_dir = Path(vault_dir) / "archive"
+    archive_dir.mkdir(exist_ok=True)
+
+    stem = src.stem
+    date_str = date.today().isoformat()
+    dst = archive_dir / f"{stem}_archived_{date_str}.md"
+
+    counter = 1
+    while dst.exists():
+        dst = archive_dir / f"{stem}_archived_{date_str}_{counter}.md"
+        counter += 1
+
+    shutil.copy2(src, dst)
+    return dst
 
 
 # ---------------------------------------------------------------------------

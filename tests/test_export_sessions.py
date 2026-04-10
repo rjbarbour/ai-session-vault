@@ -24,6 +24,7 @@ from export_sessions_to_obsidian import (
     load_cowork_sessions,
     is_interactive_session,
     find_session_files,
+    archive_vault_file,
 )
 
 
@@ -1550,3 +1551,58 @@ class TestXmlStripping:
         text = result.read_text()
         assert "command-message" not in text.split("---")[1]
         assert "init /init" in text.split("---")[1]
+
+
+class TestArchiveVaultFile:
+    def _make_vault_file(self, vault_dir, filename, content="# Test"):
+        f = vault_dir / filename
+        f.write_text(content)
+        return f
+
+    def test_copies_to_archive_subdir(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md", "# Full history")
+        result = archive_vault_file(vault, "session_abc.md")
+        assert result is not None
+        assert result.parent == vault / "archive"
+        assert result.exists()
+        assert result.read_text() == "# Full history"
+
+    def test_source_file_preserved(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        archive_vault_file(vault, "session_abc.md")
+        assert (vault / "session_abc.md").exists()
+
+    def test_archive_filename_includes_date(self, tmp_path):
+        from datetime import date
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        result = archive_vault_file(vault, "session_abc.md")
+        assert date.today().isoformat() in result.name
+
+    def test_collision_gets_counter(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        r1 = archive_vault_file(vault, "session_abc.md")
+        r2 = archive_vault_file(vault, "session_abc.md")
+        assert r1 != r2
+        assert r1.exists()
+        assert r2.exists()
+
+    def test_missing_file_returns_none(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        assert archive_vault_file(vault, "no_such.md") is None
+
+    def test_archive_dir_created_if_missing(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        assert not (vault / "archive").exists()
+        archive_vault_file(vault, "session_abc.md")
+        assert (vault / "archive").is_dir()
