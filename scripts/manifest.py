@@ -141,6 +141,7 @@ def scan_vault(manifest, vault_dir):
         vault["enriched"] = bool(fm.get("summary_short"))
         vault["title_source"] = fm.get("title_source", "")
         vault["source_mtime_at_export"] = _parse_float(fm.get("source_mtime", ""))
+        vault["source_size_at_export"] = _parse_int(fm.get("source_size", ""))
 
     # Mark vault entries as missing for sessions no longer in vault
     for session_id, entry in manifest["sessions"].items():
@@ -224,6 +225,7 @@ def update_after_export(manifest, session_id, source_tag, jsonl_path, vault_file
     entry["vault"] = {
         "filename": vault_filename,
         "source_mtime_at_export": stat.st_mtime,
+        "source_size_at_export": stat.st_size,
         "enriched": False,
         "title_source": "",
     }
@@ -309,5 +311,13 @@ def _parse_float(s):
     """Parse a string as float, return None if not parseable."""
     try:
         return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_int(s):
+    """Parse a string as int, return None if not parseable."""
+    try:
+        return int(s)
     except (ValueError, TypeError):
         return None

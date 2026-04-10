@@ -540,7 +540,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         return None
 
     session_id = jsonl_path.stem
-    dt = session_date(jsonl_path)
+    _stat = jsonl_path.stat()
+    dt = datetime.fromtimestamp(_stat.st_mtime, tz=timezone.utc)
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H:%M")
 
@@ -614,7 +615,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         safe_snippet = first_msg_snippet.replace(chr(34), "'").replace("\n", " ")
         lines.append(f"first_message: \"{safe_snippet}\"")
 
-    lines.append(f"source_mtime: {jsonl_path.stat().st_mtime}")
+    lines.append(f"source_mtime: {_stat.st_mtime}")
+    lines.append(f"source_size: {_stat.st_size}")
     lines.append(f"user_messages: {user_count}")
     lines.append(f"assistant_messages: {assistant_count}")
     lines.append(f"tags: [{source_tag}-session]")
