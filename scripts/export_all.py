@@ -147,8 +147,15 @@ def main():
     # ================================================================
     manifest = load_manifest(str(vault))
 
-    # Fast path: if no known sources changed, skip full discovery
-    if not args.full and manifest.get("sessions") and not quick_check_sources(manifest):
+    # Fast path: if no known sources changed AND no unenriched sessions, skip
+    has_unenriched = any(
+        entry.get("vault", {}).get("enriched") is False
+        for entry in manifest.get("sessions", {}).values()
+        if entry.get("vault", {}).get("filename")
+    )
+    if (not args.full and manifest.get("sessions")
+            and not quick_check_sources(manifest)
+            and not has_unenriched):
         total = len(list(vault.glob("*.md")))
         print(f"No changes detected — {total} sessions in vault")
         print()
