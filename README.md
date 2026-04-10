@@ -51,10 +51,23 @@ AUDIT     → per-account coverage report
 Subsequent runs are fast — only new or changed sessions are processed. The manifest tracks what's been exported and what state it's in.
 
 ```bash
-python3 scripts/export_all.py                # delta refresh (fast)
+python3 scripts/export_all.py                # delta refresh, all accounts (fast)
 python3 scripts/export_all.py --full         # re-export everything
 python3 scripts/export_all.py --skip-enrich  # no Haiku calls
 python3 scripts/export_all.py --audit-only   # just run audits
+```
+
+### Automated refresh
+
+A cron job runs every 10 minutes, exporting only the current account (to avoid macOS TCC permission prompts for cross-account access). Cross-account export is done manually via `export_all.py`.
+
+```bash
+# Install (already done on this machine)
+crontab -e
+*/10 * * * * /path/to/scripts/cron_refresh.sh
+
+# Manual cross-account refresh
+python3 scripts/export_all.py
 ```
 
 ## Session Data Sources

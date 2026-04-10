@@ -36,6 +36,10 @@ python3 scripts/vault_health.py
 python3 scripts/audit_sessions.py --account rob_dev
 ```
 
+## Automated Refresh
+
+A cron job runs every 10 minutes (`scripts/cron_refresh.sh`). It exports **only the current account** to avoid macOS TCC permission prompts for cross-account file access. Run `python3 scripts/export_all.py` manually when you need to index other accounts.
+
 ## Configuration
 
 Paths are configured in `config.json` (gitignored). See `config.example.json` for the schema. CLI flags override config values. Without `config.json`, generic defaults are used (`~/.claude/projects`, `~/.codex/sessions`).
