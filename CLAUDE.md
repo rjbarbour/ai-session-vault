@@ -66,7 +66,7 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 - `export_sessions_to_obsidian.py` — JSONL parsing, format detection, session export, title extraction from multiple sources (custom, Desktop, Codex, Co-work, first message)
 - `manifest.py` — delta state tracking: `load_manifest`, `save_manifest`, `scan_sources`, `scan_vault`, `compute_delta`, `check_health`
 - `enrich_sessions.py` — Haiku enrichment: titles, summaries, keywords. Parallel workers. Content-based artefact filtering.
-- `export_all.py` — pipeline orchestrator: discover → scan → export → dedupe → enrich → health → audit
+- `export_all.py` — pipeline orchestrator: discover → scan → export → enrich → health → audit
 
 ### Key patterns
 
@@ -74,7 +74,8 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 - `is_interactive_session()` filters out `claude -p` calls using dual check: single-turn + queue-operation/enqueue, plus content signature matching
 - Manifest uses `mtime + size` for JSONL change detection (append-only files)
 - Discovery caches `is_interactive` per session in manifest — known non-interactive files are stat-only on subsequent runs (no file read)
-- Vault files are never deleted by the pipeline — duplicates go to `.deleted/`, orphans are flagged not removed
+- Vault files are never deleted by the pipeline — orphans are flagged not removed
+- `dedupe_vault.py` is a standalone diagnostic tool, not part of the routine pipeline. Delta export + manifest prevent duplicates.
 
 ## Planned Work
 

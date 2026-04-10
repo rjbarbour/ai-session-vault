@@ -21,6 +21,5 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh starting" >> "$LOG"
 # non-interactive environment. Run enrichment manually from a terminal:
 #   python3 scripts/enrich_sessions.py --skip-enriched --workers 10
 python3 scripts/export_sessions_to_obsidian.py >> "$LOG" 2>&1
-python3 scripts/dedupe_vault.py >> "$LOG" 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh done" >> "$LOG"
 echo "" >> "$LOG"

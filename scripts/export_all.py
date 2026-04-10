@@ -1,4 +1,4 @@
-"""Delta refresh pipeline: export, dedupe, enrich, and audit all sessions.
+"""Delta refresh pipeline: export, enrich, and audit all sessions.
 
 Orchestrates the full pipeline using the manifest for delta detection.
 Only processes new or changed sessions on subsequent runs.
@@ -6,7 +6,7 @@ Only processes new or changed sessions on subsequent runs.
 Usage:
     python3 scripts/export_all.py                # delta refresh
     python3 scripts/export_all.py --full         # ignore manifest, re-export everything
-    python3 scripts/export_all.py --skip-enrich  # export and dedupe only
+    python3 scripts/export_all.py --skip-enrich  # export only, no Haiku
     python3 scripts/export_all.py --audit-only   # just run audits
 """
 import argparse
@@ -114,7 +114,7 @@ def main():
     cfg = load_config()
 
     parser = argparse.ArgumentParser(
-        description="Delta refresh pipeline: export, enrich, dedupe, audit"
+        description="Delta refresh pipeline: export, enrich, and audit"
     )
     parser.add_argument("--skip-enrich", action="store_true",
                         help="Skip Haiku enrichment")
@@ -253,20 +253,8 @@ def main():
     print(f"  Exported {exported} session(s)")
     print()
 
-    # ================================================================
-    # Step 6: Dedupe
-    # ================================================================
-    print("=" * 50)
-    print("DEDUPE")
-    print("=" * 50)
-    result = run_dedupe(vault)
-    output = result.stdout.strip()
-    if "No duplicates" in output:
-        print("  No duplicates found.")
-    else:
-        lines = output.split("\n")
-        print(f"  {lines[0]}")
-        print(f"  {lines[-1]}")
+    # Note: dedupe is no longer a routine pipeline step. The delta export
+    # and manifest prevent duplicates. Run dedupe_vault.py manually if needed.
     print()
 
     # ================================================================

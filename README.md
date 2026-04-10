@@ -42,7 +42,6 @@ The setup script checks Python, Claude CLI (install + auth), Obsidian, config, v
 DISCOVER  → find session files across all accounts
 SCAN      → stat JSONL files + read vault frontmatter → update manifest
 EXPORT    → new/changed sessions only (delta)
-DEDUPE    → remove duplicate vault files
 ENRICH    → AI-generated titles, summaries, keywords via Haiku
 HEALTH    → report orphans, stale entries, inconsistencies
 AUDIT     → per-account coverage report
