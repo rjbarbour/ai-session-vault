@@ -16,6 +16,9 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$PA
 cd "$PROJECT_DIR" || exit 1
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh starting" >> "$LOG"
-python3 scripts/export_all.py >> "$LOG" 2>&1
+# Export current account only — cross-account export is manual
+python3 scripts/export_sessions_to_obsidian.py >> "$LOG" 2>&1
+python3 scripts/enrich_sessions.py --skip-enriched --workers 5 >> "$LOG" 2>&1
+python3 scripts/dedupe_vault.py >> "$LOG" 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh done" >> "$LOG"
 echo "" >> "$LOG"
