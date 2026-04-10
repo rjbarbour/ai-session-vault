@@ -16,9 +16,11 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$PA
 cd "$PROJECT_DIR" || exit 1
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh starting" >> "$LOG"
-# Export current account only — cross-account export is manual
+# Export current account only — cross-account export is manual.
+# Enrichment skipped: claude CLI OAuth tokens are not available in cron's
+# non-interactive environment. Run enrichment manually from a terminal:
+#   python3 scripts/enrich_sessions.py --skip-enriched --workers 10
 python3 scripts/export_sessions_to_obsidian.py >> "$LOG" 2>&1
-python3 scripts/enrich_sessions.py --skip-enriched --workers 5 >> "$LOG" 2>&1
 python3 scripts/dedupe_vault.py >> "$LOG" 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh done" >> "$LOG"
 echo "" >> "$LOG"
