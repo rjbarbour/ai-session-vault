@@ -916,6 +916,15 @@ def main():  # pragma: no cover
     for source_tag, jsonl_path, old_vault_file in to_process:
         # Delete old vault file if re-exporting a changed session
         if old_vault_file:
+            # Archive pre-compaction vault file if JSONL shrank
+            session_id = jsonl_path.stem
+            entry = manifest["sessions"].get(session_id, {})
+            current_size = (entry.get("source") or {}).get("size")
+            export_size = (entry.get("vault") or {}).get("source_size_at_export")
+            if current_size is not None and export_size is not None and current_size < export_size:
+                archived = archive_vault_file(vault, old_vault_file)
+                if archived:
+                    print(f"  [archive] Pre-compaction preserved: {archived.name}")
             old_path = vault / old_vault_file
             if old_path.exists():
                 old_path.unlink()
