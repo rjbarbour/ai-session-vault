@@ -1606,3 +1606,66 @@ class TestArchiveVaultFile:
         assert not (vault / "archive").exists()
         archive_vault_file(vault, "session_abc.md")
         assert (vault / "archive").is_dir()
+
+
+class TestCompactionInPipeline:
+    """Integration tests for _archive_if_compacted in export_all.py."""
+
+    def _make_vault_md(self, vault_dir, filename):
+        """Write a minimal vault file."""
+        (vault_dir / filename).write_text("# Session\n\nSome content.\n")
+
+    def test_archive_created_when_file_shrank(self, tmp_path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from export_all import _archive_if_compacted
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        old_filename = "claude-cli_test-session_abc123.md"
+        self._make_vault_md(vault, old_filename)
+
+        entry = {
+            "source": {"size": 800},
+            "vault": {"source_size_at_export": 5000},
+        }
+        archived = _archive_if_compacted(vault, old_filename, entry)
+        assert archived is not None
+        assert archived.parent == vault / "archive"
+        assert archived.exists()
+        assert (vault / old_filename).exists()
+
+    def test_no_archive_when_file_grew(self, tmp_path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from export_all import _archive_if_compacted
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        old_filename = "claude-cli_test-session_abc123.md"
+        self._make_vault_md(vault, old_filename)
+
+        entry = {
+            "source": {"size": 8000},
+            "vault": {"source_size_at_export": 5000},
+        }
+        archived = _archive_if_compacted(vault, old_filename, entry)
+        assert archived is None
+        assert not (vault / "archive").exists()
+
+    def test_no_archive_when_size_at_export_unknown(self, tmp_path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from export_all import _archive_if_compacted
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        old_filename = "claude-cli_test-session_abc123.md"
+        self._make_vault_md(vault, old_filename)
+
+        entry = {
+            "source": {"size": 800},
+            "vault": {},
+        }
+        archived = _archive_if_compacted(vault, old_filename, entry)
+        assert archived is None
