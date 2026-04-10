@@ -38,7 +38,14 @@ python3 scripts/audit_sessions.py --account rob_dev
 
 ## Automated Refresh
 
-A cron job runs every 10 minutes (`scripts/cron_refresh.sh`). It exports **only the current account** to avoid macOS TCC permission prompts for cross-account file access. Run `python3 scripts/export_all.py` manually when you need to index other accounts.
+A cron job runs every 10 minutes (`scripts/cron_refresh.sh`). It exports and dedupes the **current account only** — no cross-account access (avoids TCC prompts) and no enrichment (Claude CLI OAuth is unavailable in cron's non-interactive environment).
+
+To enrich new sessions, run from an interactive terminal:
+```bash
+python3 scripts/enrich_sessions.py --skip-enriched --workers 10
+```
+
+For cross-account refresh: `python3 scripts/export_all.py`
 
 ## Configuration
 

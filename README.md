@@ -59,14 +59,17 @@ python3 scripts/export_all.py --audit-only   # just run audits
 
 ### Automated refresh
 
-A cron job runs every 10 minutes, exporting only the current account (to avoid macOS TCC permission prompts for cross-account access). Cross-account export is done manually via `export_all.py`.
+A cron job runs every 10 minutes, exporting only the current account. Enrichment (AI titles/summaries) is **not** run by cron because the Claude CLI's OAuth tokens are unavailable in cron's non-interactive environment. Run enrichment manually from an interactive terminal.
 
 ```bash
-# Install (already done on this machine)
-crontab -e
+# Cron does: export + dedupe (current account only, every 10 min)
+# Install: crontab -e, add:
 */10 * * * * /path/to/scripts/cron_refresh.sh
 
-# Manual cross-account refresh
+# Manual enrichment (run periodically from a terminal)
+python3 scripts/enrich_sessions.py --skip-enriched --workers 10
+
+# Manual cross-account refresh (all accounts)
 python3 scripts/export_all.py
 ```
 
