@@ -24,6 +24,7 @@ from export_sessions_to_obsidian import (
     load_cowork_sessions,
     is_interactive_session,
     find_session_files,
+    archive_vault_file,
 )
 
 
@@ -1550,3 +1551,121 @@ class TestXmlStripping:
         text = result.read_text()
         assert "command-message" not in text.split("---")[1]
         assert "init /init" in text.split("---")[1]
+
+
+class TestArchiveVaultFile:
+    def _make_vault_file(self, vault_dir, filename, content="# Test"):
+        f = vault_dir / filename
+        f.write_text(content)
+        return f
+
+    def test_copies_to_archive_subdir(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md", "# Full history")
+        result = archive_vault_file(vault, "session_abc.md")
+        assert result is not None
+        assert result.parent == vault / "archive"
+        assert result.exists()
+        assert result.read_text() == "# Full history"
+
+    def test_source_file_preserved(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        archive_vault_file(vault, "session_abc.md")
+        assert (vault / "session_abc.md").exists()
+
+    def test_archive_filename_includes_date(self, tmp_path):
+        from datetime import date
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        result = archive_vault_file(vault, "session_abc.md")
+        assert date.today().isoformat() in result.name
+
+    def test_collision_gets_counter(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        r1 = archive_vault_file(vault, "session_abc.md")
+        r2 = archive_vault_file(vault, "session_abc.md")
+        assert r1 != r2
+        assert r1.exists()
+        assert r2.exists()
+
+    def test_missing_file_returns_none(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        assert archive_vault_file(vault, "no_such.md") is None
+
+    def test_archive_dir_created_if_missing(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        self._make_vault_file(vault, "session_abc.md")
+        assert not (vault / "archive").exists()
+        archive_vault_file(vault, "session_abc.md")
+        assert (vault / "archive").is_dir()
+
+
+class TestCompactionInPipeline:
+    """Integration tests for _archive_if_compacted in export_all.py."""
+
+    def _make_vault_md(self, vault_dir, filename):
+        """Write a minimal vault file."""
+        (vault_dir / filename).write_text("# Session\n\nSome content.\n")
+
+    def test_archive_created_when_file_shrank(self, tmp_path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from export_all import _archive_if_compacted
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        old_filename = "claude-cli_test-session_abc123.md"
+        self._make_vault_md(vault, old_filename)
+
+        entry = {
+            "source": {"size": 800},
+            "vault": {"source_size_at_export": 5000},
+        }
+        archived = _archive_if_compacted(vault, old_filename, entry)
+        assert archived is not None
+        assert archived.parent == vault / "archive"
+        assert archived.exists()
+        assert (vault / old_filename).exists()
+
+    def test_no_archive_when_file_grew(self, tmp_path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from export_all import _archive_if_compacted
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        old_filename = "claude-cli_test-session_abc123.md"
+        self._make_vault_md(vault, old_filename)
+
+        entry = {
+            "source": {"size": 8000},
+            "vault": {"source_size_at_export": 5000},
+        }
+        archived = _archive_if_compacted(vault, old_filename, entry)
+        assert archived is None
+        assert not (vault / "archive").exists()
+
+    def test_no_archive_when_size_at_export_unknown(self, tmp_path):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from export_all import _archive_if_compacted
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        old_filename = "claude-cli_test-session_abc123.md"
+        self._make_vault_md(vault, old_filename)
+
+        entry = {
+            "source": {"size": 800},
+            "vault": {},
+        }
+        archived = _archive_if_compacted(vault, old_filename, entry)
+        assert archived is None

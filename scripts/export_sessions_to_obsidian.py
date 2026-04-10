@@ -21,8 +21,9 @@ Configuration:
 import argparse
 import json
 import re
+import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 # Import shared utilities — these are re-exported at module level for
@@ -38,6 +39,39 @@ except ImportError:
         load_config, check_dir, slugify, resolve_account_paths,
         extract_account, CONFIG_PATH, GENERIC_DEFAULTS,
     )
+
+
+# ---------------------------------------------------------------------------
+# Archive helper
+# ---------------------------------------------------------------------------
+
+def archive_vault_file(vault_dir, vault_filename):
+    """Copy a vault file to vault_dir/archive/ with a date suffix.
+
+    Preserves the source file — caller is responsible for deleting it afterward.
+    Returns the archive Path, or None if the source file does not exist.
+
+    If an archive with the same name already exists (same day), appends
+    an incrementing counter: ..._archived_2026-04-10_1.md, _2, etc.
+    """
+    src = Path(vault_dir) / vault_filename
+    if not src.exists():
+        return None
+
+    archive_dir = Path(vault_dir) / "archive"
+    archive_dir.mkdir(exist_ok=True)
+
+    stem = src.stem
+    date_str = date.today().isoformat()
+    dst = archive_dir / f"{stem}_archived_{date_str}.md"
+
+    counter = 1
+    while dst.exists():
+        dst = archive_dir / f"{stem}_archived_{date_str}_{counter}.md"
+        counter += 1
+
+    shutil.copy2(src, dst)
+    return dst
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +574,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         return None
 
     session_id = jsonl_path.stem
-    dt = session_date(jsonl_path)
+    _stat = jsonl_path.stat()
+    dt = datetime.fromtimestamp(_stat.st_mtime, tz=timezone.utc)
     date_str = dt.strftime("%Y-%m-%d")
     time_str = dt.strftime("%H:%M")
 
@@ -614,7 +649,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
         safe_snippet = first_msg_snippet.replace(chr(34), "'").replace("\n", " ")
         lines.append(f"first_message: \"{safe_snippet}\"")
 
-    lines.append(f"source_mtime: {jsonl_path.stat().st_mtime}")
+    lines.append(f"source_mtime: {_stat.st_mtime}")
+    lines.append(f"source_size: {_stat.st_size}")
     lines.append(f"user_messages: {user_count}")
     lines.append(f"assistant_messages: {assistant_count}")
     lines.append(f"tags: [{source_tag}-session]")
@@ -880,6 +916,15 @@ def main():  # pragma: no cover
     for source_tag, jsonl_path, old_vault_file in to_process:
         # Delete old vault file if re-exporting a changed session
         if old_vault_file:
+            # Archive pre-compaction vault file if JSONL shrank
+            session_id = jsonl_path.stem
+            entry = manifest["sessions"].get(session_id, {})
+            current_size = (entry.get("source") or {}).get("size")
+            export_size = (entry.get("vault") or {}).get("source_size_at_export")
+            if current_size is not None and export_size is not None and current_size < export_size:
+                archived = archive_vault_file(vault, old_vault_file)
+                if archived:
+                    print(f"  [archive] Pre-compaction preserved: {archived.name}")
             old_path = vault / old_vault_file
             if old_path.exists():
                 old_path.unlink()

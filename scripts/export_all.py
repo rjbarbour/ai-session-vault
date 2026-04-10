@@ -24,11 +24,29 @@ from utils import load_config, resolve_account_paths, check_claude_cli
 from export_sessions_to_obsidian import (
     export_session, find_session_files,
     load_desktop_titles, load_cowork_sessions, load_codex_titles,
+    archive_vault_file,
 )
 from manifest import (
     load_manifest, save_manifest, scan_sources, scan_vault,
     compute_delta, update_after_export, check_health, quick_check_sources,
 )
+
+
+def _archive_if_compacted(vault_dir, old_vault_filename, manifest_entry):
+    """Archive the old vault file if the JSONL shrank since last export (compaction).
+
+    Uses sizes already in the manifest entry — no file reads needed.
+    Returns the archive Path if compaction was detected, or None.
+    """
+    current_size = (manifest_entry.get("source") or {}).get("size")
+    export_size = (manifest_entry.get("vault") or {}).get("source_size_at_export")
+
+    if current_size is None or export_size is None:
+        return None
+
+    if current_size < export_size:
+        return archive_vault_file(vault_dir, old_vault_filename)
+    return None
 
 
 def discover_all_sessions(accounts, cfg, manifest=None):
@@ -201,6 +219,11 @@ def main():
         # Delete old vault file if re-exporting
         old_vault = session.get("old_vault_file")
         if old_vault:
+            session_id = session["jsonl_path"].stem
+            entry = manifest["sessions"].get(session_id, {})
+            archived = _archive_if_compacted(vault, old_vault, entry)
+            if archived:
+                print(f"  [archive] Pre-compaction preserved: {archived.name}")
             old_path = vault / old_vault
             if old_path.exists():
                 old_path.unlink()
