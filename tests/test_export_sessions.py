@@ -1241,6 +1241,54 @@ class TestAssistantTruncation:
         text = result.read_text()
         assert "[Response truncated" in text
 
+    def test_truncation_inside_code_fence_closes_it(self, tmp_path):
+        """Regression: if truncation cuts inside a fenced block, the fence
+        must be closed before the marker — otherwise Obsidian renders
+        everything from the cut to EOF as code."""
+        import re as _re
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        # Open a fence early, then pad past the 5000-char truncation point
+        # without ever closing it.
+        body = "Here is a tree:\n\n```\n├── a\n├── b\n" + ("├── item\n" * 1000)
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "show me"},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": body}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        # Match the production regex exactly so the invariant we assert
+        # is the one Obsidian's parser actually observes.
+        fences = len(_re.findall(r"(?m)^```", text))
+        assert fences % 2 == 0, (
+            f"Unbalanced code fences ({fences}) — truncation did not close "
+            "the fence before the marker"
+        )
+        assert "[Response truncated" in text
+
+    def test_user_truncation_inside_code_fence_closes_it(self, tmp_path):
+        """Same bug, user-message path (3000-char cutoff)."""
+        import re as _re
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        # User messages are truncated at 3000 chars, so we need an earlier
+        # fence with padding past 3000 chars.
+        body = "Here is a snippet:\n\n```python\nprint('hi')\n" + ("line\n" * 800)
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": body},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": "ok"}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        fences = len(_re.findall(r"(?m)^```", text))
+        assert fences % 2 == 0, (
+            f"Unbalanced code fences ({fences}) — user-path truncation did "
+            "not close the fence before the marker"
+        )
+        assert "[Message truncated" in text
+
 
 # ---------------------------------------------------------------------------
 # Codex: load_codex_titles default path branch
