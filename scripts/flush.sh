@@ -16,6 +16,9 @@
 
 set -euo pipefail
 
+# Invoke this script via its real path, not via a symlink. SCRIPT_DIR is
+# derived from $0's directory, so a symlink at e.g. ~/bin/flush.sh would
+# resolve PROJECT_DIR to ~, not the repo.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 

@@ -28,6 +28,8 @@ Secondary use case: any situation where waiting up to 10 minutes for the next cr
 4. **SIGINT mid-export.** The manifest is saved at the end of the run via `atomic_write`, and per-file writes also use `atomic_write`. If Ctrl-C interrupts mid-run, any files written before the interrupt exist correctly; the manifest was not updated. The next run's vault scan reconciles: the existing files are detected in the vault scan, nothing is re-exported unnecessarily. Self-heals. No cleanup required.
 5. **Multi-account / multi-user.** Each account has its own vault path (via `config.json` per-user), so concurrent flushes on a shared machine don't contend. Documented for completeness; not a design constraint.
 
+6. **"Current account only" semantics.** Flush delegates to `export_sessions_to_obsidian.py` with no flags and therefore inherits whatever `config.json` defines. On a single-account `config.json` (the default) this is strictly the current user's sessions. `cron_refresh.sh` calls the same script the same way, so flush and cron have identical account semantics: the "cross-account is manual" guarantee comes from the convention that multi-account listings stay out of `config.json` and only appear in the explicit `export_all.py` invocation (which iterates the `accounts` list). For the `/compact` use case this is irrelevant because the user's own session is always in scope. If an explicit filter is ever needed, pass `--account "$USER"` to the underlying script.
+
 ## Script contract: `scripts/flush.sh`
 
 ### Purpose
