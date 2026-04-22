@@ -42,7 +42,6 @@ The setup script checks Python, Claude CLI (install + auth), Obsidian, config, v
 DISCOVER  → find session files across all accounts
 SCAN      → stat JSONL files + read vault frontmatter → update manifest
 EXPORT    → new/changed sessions only (delta)
-DEDUPE    → remove duplicate vault files
 ENRICH    → AI-generated titles, summaries, keywords via Haiku
 HEALTH    → report orphans, stale entries, inconsistencies
 AUDIT     → per-account coverage report
@@ -59,16 +58,39 @@ python3 scripts/export_all.py --audit-only   # just run audits
 
 ### Automated refresh
 
-A cron job runs every 10 minutes, exporting only the current account (to avoid macOS TCC permission prompts for cross-account access). Cross-account export is done manually via `export_all.py`.
+A cron job runs every 10 minutes, exporting the current account and enriching any new sessions.
 
 ```bash
-# Install (already done on this machine)
-crontab -e
+# Install: crontab -e, add:
 */10 * * * * /path/to/scripts/cron_refresh.sh
 
-# Manual cross-account refresh
+# Manual cross-account refresh (all accounts)
 python3 scripts/export_all.py
 ```
+
+#### Keychain setup (one-time, required for cron enrichment)
+
+The Claude CLI stores its OAuth token in the macOS login Keychain. By default, non-interactive processes (including cron) can't read it — they get "Not logged in" even though you're logged in via `claude /login`.
+
+Fix: add Anthropic's Developer ID team to the Keychain item's partition list. This trusts any binary signed by Anthropic to read the token, so the CLI's frequent version bumps are handled automatically.
+
+```bash
+./scripts/authorise_keychain_for_cron.sh
+```
+
+The script runs `security set-generic-password-partition-list` with team ID `Q6L2SF6YDW` (Anthropic PBC) and prompts once for your macOS login password.
+
+**If cron enrichment suddenly stops working after a Claude CLI update:** first check whether Anthropic has changed their signing identity. This is very rare but is the correct first place to look before chasing other causes.
+
+```bash
+codesign -dvv "$(readlink -f "$(which claude)")" 2>&1 | grep -E 'TeamIdentifier|Identifier'
+```
+
+If `TeamIdentifier` is no longer `Q6L2SF6YDW`, update `authorise_keychain_for_cron.sh` with the new value and re-run it.
+
+#### Keychain lock state
+
+The login Keychain is unlocked while you're logged in — screen lock does **not** lock it. Cron enrichment works while the screen is locked. If you've enabled "Lock when sleeping" or "Lock after N minutes of inactivity" on the login Keychain (not the default), enrichment will fail silently during those periods and resume on the next cycle once the Keychain is unlocked. Export is unaffected.
 
 ## Session Data Sources
 

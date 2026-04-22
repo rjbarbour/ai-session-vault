@@ -38,7 +38,9 @@ python3 scripts/audit_sessions.py --account rob_dev
 
 ## Automated Refresh
 
-A cron job runs every 10 minutes (`scripts/cron_refresh.sh`). It exports **only the current account** to avoid macOS TCC permission prompts for cross-account file access. Run `python3 scripts/export_all.py` manually when you need to index other accounts.
+A cron job runs every 10 minutes (`scripts/cron_refresh.sh`). It exports the **current account only** (no cross-account access, to avoid TCC prompts) and enriches any new sessions. Cross-account refresh is manual: `python3 scripts/export_all.py`.
+
+Cron enrichment depends on a one-time Keychain partition-list authorisation so non-interactive processes can read the Claude CLI's OAuth token. If you're setting up on a new machine, run `./scripts/authorise_keychain_for_cron.sh` once. See README "Keychain setup" for the full explanation, including the first thing to check if enrichment suddenly breaks (Anthropic's signing team ID changing).
 
 ## Configuration
 
@@ -59,7 +61,7 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 - `export_sessions_to_obsidian.py` — JSONL parsing, format detection, session export, title extraction from multiple sources (custom, Desktop, Codex, Co-work, first message)
 - `manifest.py` — delta state tracking: `load_manifest`, `save_manifest`, `scan_sources`, `scan_vault`, `compute_delta`, `check_health`
 - `enrich_sessions.py` — Haiku enrichment: titles, summaries, keywords. Parallel workers. Content-based artefact filtering.
-- `export_all.py` — pipeline orchestrator: discover → scan → export → dedupe → enrich → health → audit
+- `export_all.py` — pipeline orchestrator: discover → scan → export → enrich → health → audit
 
 ### Key patterns
 
@@ -67,7 +69,8 @@ Paths are configured in `config.json` (gitignored). See `config.example.json` fo
 - `is_interactive_session()` filters out `claude -p` calls using dual check: single-turn + queue-operation/enqueue, plus content signature matching
 - Manifest uses `mtime + size` for JSONL change detection (append-only files)
 - Discovery caches `is_interactive` per session in manifest — known non-interactive files are stat-only on subsequent runs (no file read)
-- Vault files are never deleted by the pipeline — duplicates go to `.deleted/`, orphans are flagged not removed
+- Vault files are never deleted by the pipeline — orphans are flagged not removed
+- `dedupe_vault.py` is a standalone diagnostic tool, not part of the routine pipeline. Delta export + manifest prevent duplicates.
 
 ## Planned Work
 
