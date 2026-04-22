@@ -1320,6 +1320,9 @@ class TestAssistantTruncation:
         )
         # No truncation happened — message is short
         assert "[Response truncated" not in text
+        # The original trailing content must survive — the appended closing
+        # fence must go at end of the message, not replace real content.
+        assert "That proves it works." in text
 
 
 # ---------------------------------------------------------------------------

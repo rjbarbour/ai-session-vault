@@ -98,6 +98,28 @@ If you see vault entries that look like enrichment prompts rather than real sess
 ### Wrong account attribution
 Co-work sessions use `/sessions/<name>` as their cwd instead of a real path. The account is extracted from the JSONL file path instead. If you see blank `account:` fields, re-export with the latest code.
 
+### Files rendering as one giant code block in Obsidian
+Caused by an unbalanced triple-backtick fence in the exported Markdown — everything from the unclosed fence to EOF becomes `<pre>`. Fixed for new exports in the current code; pre-fix vault files may still carry the damage because the exporter only rewrites vault files when the source JSONL changes.
+
+To detect and repair:
+```bash
+# 1. List damaged files
+python3 scripts/find_damaged_vault_files.py
+
+# 2. Move them out of the vault (backup first if you want to keep the old summaries)
+python3 scripts/find_damaged_vault_files.py | \
+  xargs -I {} mv "<vault>/{}" /tmp/damaged-backup/
+
+# 3. Re-export — scan_vault detects the missing files and regenerates them cleanly
+python3 scripts/export_all.py --skip-enrich
+
+# 4. Cron will re-enrich on its next tick (or run manually)
+python3 scripts/enrich_sessions.py --skip-enriched --workers 10
+
+# 5. Confirm the vault is clean
+python3 scripts/find_damaged_vault_files.py
+```
+
 ## iCloud Issues (macOS)
 
 ### Projects moved by iCloud Optimize Storage

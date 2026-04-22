@@ -68,7 +68,13 @@ def main():
         vault = args.vault.expanduser()
     else:
         cfg = load_config()
-        vault = Path(cfg.get("vault_path", "")).expanduser()
+        vault_path = cfg.get("vault_path", "")
+        if not vault_path:
+            print("Error: vault_path missing from config.json. "
+                  "Pass --vault <path> or set vault_path in config.",
+                  file=sys.stderr)
+            return 2
+        vault = Path(vault_path).expanduser()
 
     if not vault.is_dir():
         print(f"Error: vault not found: {vault}", file=sys.stderr)
