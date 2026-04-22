@@ -52,6 +52,11 @@ def _close_unclosed_fence(text):
     ``` is lost and Obsidian renders everything from there to EOF as code.
     This counts line-start triple-backticks and appends a closing fence on
     its own line if the count is odd.
+
+    Scope: handles triple-backtick fences only. Tilde fences (``~~~``) and
+    4+-backtick fences are not tracked — they're vanishingly rare in the
+    Claude/Codex session transcripts this pipeline processes. If they ever
+    show up in practice, extend here.
     """
     fence_opens = len(re.findall(r"(?m)^```", text))
     if fence_opens % 2 == 1:
