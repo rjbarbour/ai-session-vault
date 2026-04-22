@@ -17,9 +17,11 @@ cd "$PROJECT_DIR" || exit 1
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh starting" >> "$LOG"
 # Export current account only — cross-account export is manual.
-# Enrichment skipped: claude CLI OAuth tokens are not available in cron's
-# non-interactive environment. Run enrichment manually from a terminal:
-#   python3 scripts/enrich_sessions.py --skip-enriched --workers 10
 python3 scripts/export_sessions_to_obsidian.py >> "$LOG" 2>&1
+
+# Enrichment requires the claude CLI's Keychain token to be readable by
+# non-interactive processes. One-time setup: run authorise_keychain_for_cron.sh.
+# See README "Automated refresh" section for details.
+python3 scripts/enrich_sessions.py --skip-enriched --workers 10 >> "$LOG" 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') — cron refresh done" >> "$LOG"
 echo "" >> "$LOG"
