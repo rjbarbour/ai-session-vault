@@ -96,13 +96,6 @@ def run_enrich(workers, skip_enriched=True):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
 
-def run_dedupe(vault):
-    """Run deduplication."""
-    cmd = [sys.executable, os.path.join(SCRIPT_DIR, "dedupe_vault.py"),
-           "--vault", str(vault)]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-
 def run_audit(account):
     """Run audit for one account."""
     cmd = [sys.executable, os.path.join(SCRIPT_DIR, "audit_sessions.py"),

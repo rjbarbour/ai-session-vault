@@ -23,6 +23,17 @@ SERVICE="Claude Code-credentials"
 ACCOUNT="${USER}"
 KEYCHAIN="${HOME}/Library/Keychains/login.keychain-db"
 
+# Verify the specific (service, account) item exists before we try to
+# authorise it. Avoids a cryptic "item could not be found" on fresh machines
+# where `claude /login` has never been run. Metadata-only lookup, does not
+# touch the password.
+if ! security find-generic-password -s "${SERVICE}" -a "${ACCOUNT}" \
+      "${KEYCHAIN}" >/dev/null 2>&1; then
+  echo "Error: no '${SERVICE}' item for account '${ACCOUNT}' in ${KEYCHAIN}." >&2
+  echo "Run 'claude /login' first to sign in and create the Keychain entry." >&2
+  exit 1
+fi
+
 echo "Adding team ID ${TEAM_ID} to partition list for ${SERVICE} (${ACCOUNT})"
 echo "You will be prompted for your macOS login password."
 echo

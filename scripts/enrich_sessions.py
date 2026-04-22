@@ -36,6 +36,23 @@ except ImportError:
 # Alias for internal use
 parse_frontmatter = parse_frontmatter_text
 
+# Log only the first claude CLI failure per run, so a locked Keychain or
+# auth regression leaves one diagnostic line rather than one per session.
+_first_failure_lock = threading.Lock()
+_first_failure_reported = False
+
+
+def _report_first_failure(stderr_text):
+    global _first_failure_reported
+    with _first_failure_lock:
+        if _first_failure_reported:
+            return
+        _first_failure_reported = True
+    snippet = (stderr_text or "").strip()[:200]
+    if snippet:
+        print(f"claude CLI failure (first occurrence): {snippet}",
+              file=sys.stderr, flush=True)
+
 
 def extract_turns(body):
     """Extract all user/assistant turns from the markdown body."""
@@ -137,6 +154,7 @@ def enrich_session(md_content):
             input=prompt, capture_output=True, text=True, timeout=180,
         )
         if result.returncode != 0:
+            _report_first_failure(result.stderr)
             return None
         output = result.stdout.strip()
         # Strip markdown fences if present
