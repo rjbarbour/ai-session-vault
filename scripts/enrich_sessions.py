@@ -148,6 +148,9 @@ def enrich_session(md_content):
         "Now return the JSON enrichment object as specified in your system prompt."
     )
     try:
+        # 180s covers the observed p99 for 150k-char structured-JSON Haiku
+        # calls under concurrent load. Shorter values produced spurious
+        # timeouts on the largest sessions.
         result = subprocess.run(
             ["claude", "--model", "haiku", "-p",
              "--system-prompt", ENRICHMENT_SYSTEM_PROMPT],
