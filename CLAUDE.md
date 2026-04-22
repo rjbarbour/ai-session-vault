@@ -34,6 +34,9 @@ python3 scripts/vault_health.py
 
 # Audit a specific account
 python3 scripts/audit_sessions.py --account rob_dev
+
+# On-demand vault flush (current account, no enrichment — cron backfills)
+./scripts/flush.sh
 ```
 
 ## Automated Refresh
