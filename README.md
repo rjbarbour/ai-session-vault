@@ -68,6 +68,14 @@ A cron job runs every 10 minutes, exporting the current account and enriching an
 python3 scripts/export_all.py
 ```
 
+### On-demand flush
+
+For situations where waiting for the next cron tick is too slow — most commonly "save my current session before running `/compact`" — use `scripts/flush.sh`. It does a fast delta export for the current account and skips enrichment (cron picks that up within 10 minutes).
+
+```bash
+./scripts/flush.sh
+```
+
 #### Keychain setup (one-time, required for cron enrichment)
 
 The Claude CLI stores its OAuth token in the macOS login Keychain. By default, non-interactive processes (including cron) can't read it — they get "Not logged in" even though you're logged in via `claude /login`.
@@ -175,6 +183,7 @@ See `docs/cross-account-access.md` for details on the three permission layers (P
 | `setup.py` | Pre-flight checks and guided setup |
 | `export_all.py` | Full delta refresh pipeline |
 | `export_sessions_to_obsidian.py` | Core export (single account) |
+| `flush.sh` | On-demand vault flush (current account, no enrichment) |
 | `enrich_sessions.py` | AI enrichment via Claude Haiku |
 | `dedupe_vault.py` | Remove duplicate vault files |
 | `vault_health.py` | Report and fix vault inconsistencies |
