@@ -1289,6 +1289,38 @@ class TestAssistantTruncation:
         )
         assert "[Message truncated" in text
 
+    def test_content_unbalanced_fence_closes_even_without_truncation(self, tmp_path):
+        """A message with an unclosed fence in its own content (no truncation)
+        must still be balanced — Obsidian misrenders either way."""
+        import re as _re
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        # Short message (< 5000 chars) with an unclosed fence due to a typo:
+        # two backticks where three were intended. This pattern really shows
+        # up in sessions where the model or user mistyped.
+        body = (
+            "Run:\n\n"
+            "```bash\n"
+            "curl http://localhost:3456\n"
+            "`` immediately after startup\n"   # <-- two backticks, not three
+            "\n"
+            "That proves it works."
+        )
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "show me"},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": body}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        fences = len(_re.findall(r"(?m)^```", text))
+        assert fences % 2 == 0, (
+            f"Unbalanced code fences ({fences}) — content-level unclosed "
+            "fence was not balanced"
+        )
+        # No truncation happened — message is short
+        assert "[Response truncated" not in text
+
 
 # ---------------------------------------------------------------------------
 # Codex: load_codex_titles default path branch
