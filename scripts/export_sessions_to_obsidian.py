@@ -57,6 +57,14 @@ def _close_unclosed_fence(text):
     4+-backtick fences are not tracked — they're vanishingly rare in the
     Claude/Codex session transcripts this pipeline processes. If they ever
     show up in practice, extend here.
+
+    Trade-off: a message whose source content contains an odd number of
+    column-0 triple-backticks as prose (e.g. discussing fences across
+    multiple lines) will have a stray closing fence appended. The regex's
+    column-0 anchor filters out most inline-prose mentions, and the
+    counterfactual — Obsidian rendering everything from the unclosed
+    fence to EOF as a code block — is far worse than one extra empty
+    code block.
     """
     fence_opens = len(re.findall(r"(?m)^```", text))
     if fence_opens % 2 == 1:
