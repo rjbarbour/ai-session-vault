@@ -689,8 +689,12 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
             lines.append(f"## User (turn {turn})")
             lines.append("")
             truncated = text[:3000]
+            # Close any unclosed fence before the optional truncation marker.
+            # Covers both truncation cutting mid-fence AND content-level
+            # unbalanced fences (e.g. a model response that emitted ``` without
+            # closing it). Either way, Obsidian would misrender.
+            truncated = _close_unclosed_fence(truncated)
             if len(text) > 3000:
-                truncated = _close_unclosed_fence(truncated)
                 truncated += f"\n\n*[Message truncated — {len(text)} chars total]*"
             lines.append(truncated)
             lines.append("")
@@ -698,8 +702,8 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
             lines.append(f"## Assistant (turn {turn})")
             lines.append("")
             truncated = text[:5000]
+            truncated = _close_unclosed_fence(truncated)
             if len(text) > 5000:
-                truncated = _close_unclosed_fence(truncated)
                 truncated += f"\n\n*[Response truncated — {len(text)} chars total]*"
             lines.append(truncated)
             lines.append("")
