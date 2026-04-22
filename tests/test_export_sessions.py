@@ -1241,6 +1241,30 @@ class TestAssistantTruncation:
         text = result.read_text()
         assert "[Response truncated" in text
 
+    def test_truncation_inside_code_fence_closes_it(self, tmp_path):
+        """Regression: if truncation cuts inside a fenced block, the fence
+        must be closed before the marker — otherwise Obsidian renders
+        everything from the cut to EOF as code."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        # Open a fence early, then pad past the 5000-char truncation point
+        # without ever closing it.
+        body = "Here is a tree:\n\n```\n├── a\n├── b\n" + ("├── item\n" * 1000)
+        f = _make_jsonl(tmp_path, [
+            {"type": "user", "message": {"content": "show me"},
+             "cwd": "/Users/test/project"},
+            {"type": "assistant", "message": {"content": body}},
+        ])
+        result = export_session(f, vault)
+        text = result.read_text()
+        # Triple-backtick fences must be balanced (even count)
+        fences = text.count("\n```")
+        assert fences % 2 == 0, (
+            f"Unbalanced code fences ({fences}) — truncation did not close "
+            "the fence before the marker"
+        )
+        assert "[Response truncated" in text
+
 
 # ---------------------------------------------------------------------------
 # Codex: load_codex_titles default path branch

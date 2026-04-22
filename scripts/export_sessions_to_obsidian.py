@@ -42,6 +42,24 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Truncation helpers
+# ---------------------------------------------------------------------------
+
+def _close_unclosed_fence(text):
+    """Close a triple-backtick code fence if the text has an odd count.
+
+    When per-message truncation cuts inside a fenced code block, the closing
+    ``` is lost and Obsidian renders everything from there to EOF as code.
+    This counts line-start triple-backticks and appends a closing fence on
+    its own line if the count is odd.
+    """
+    fence_opens = len(re.findall(r"(?m)^```", text))
+    if fence_opens % 2 == 1:
+        text = text.rstrip() + "\n```"
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Archive helper
 # ---------------------------------------------------------------------------
 
@@ -667,6 +685,7 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
             lines.append("")
             truncated = text[:3000]
             if len(text) > 3000:
+                truncated = _close_unclosed_fence(truncated)
                 truncated += f"\n\n*[Message truncated — {len(text)} chars total]*"
             lines.append(truncated)
             lines.append("")
@@ -675,6 +694,7 @@ def export_session(jsonl_path, vault_dir, source_tag=None, desktop_titles=None,
             lines.append("")
             truncated = text[:5000]
             if len(text) > 5000:
+                truncated = _close_unclosed_fence(truncated)
                 truncated += f"\n\n*[Response truncated — {len(text)} chars total]*"
             lines.append(truncated)
             lines.append("")
