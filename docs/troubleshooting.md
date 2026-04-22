@@ -64,6 +64,15 @@ claude /login
 ```
 If you don't want enrichment, use `--skip-enrich`.
 
+### Cron enrichment stopped working after a Claude CLI update
+The cron job reads the Claude CLI's OAuth token from the login Keychain via a partition-list entry trusting Anthropic's Developer ID team. If Anthropic ever changes their signing identity, the partition-list entry no longer matches and enrichment fails with "Not logged in" errors in `cron_refresh.log`.
+
+**First thing to check:**
+```bash
+codesign -dvv "$(readlink -f "$(which claude)")" 2>&1 | grep TeamIdentifier
+```
+If `TeamIdentifier` is no longer `Q6L2SF6YDW`, update the team ID in `scripts/authorise_keychain_for_cron.sh` and re-run it. See the "Keychain setup" section in the README for the full explanation of the trust model.
+
 ### Enrichment fails on large sessions
 Sessions exceeding Haiku's context window (~200K tokens) are automatically truncated to first 20 + last 20 turns. If it still fails, the session is skipped — the exported Markdown is still in the vault, just without the AI-generated title/summary.
 
